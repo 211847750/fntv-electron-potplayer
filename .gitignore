@@ -1,4 +1,7 @@
 node_modules
+.cache
+.DS_Store
+.sisyphus
 release
 third_party/*
 package-lock.json

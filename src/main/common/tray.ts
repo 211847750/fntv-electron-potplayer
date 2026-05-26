@@ -1,4 +1,4 @@
-import { Tray, Menu, nativeImage, BrowserWindow, app, dialog, ipcMain } from 'electron';
+import { Tray, Menu, nativeImage, BrowserWindow, app, dialog } from 'electron';
 import * as path from 'path';
 import { getInstance as getUpdateChecker } from '../../modules/updater/updateChecker';
 import { setMacCloseAction, getTrayNotificationShown, setTrayNotificationShown } from './preferences';
@@ -16,7 +16,9 @@ async function createSettingsSubmenu(mainWindow: BrowserWindow | null): Promise<
     const proxyConfig = fnConfig.getDownloadProxyConfig();
     const hideOriginalPlayButton = fnConfig.getHideOriginalPlayButton();
     const nasProxyEnabled = fnConfig.getNasProxyEnabled();
+    const currentPlayerType = fnConfig.getPlayerType();
     const currentMpvPath = fnConfig.getMpvPlayerPath();
+    const currentPotPlayerPath = fnConfig.getPotPlayerPath();
 
     const submenu: Electron.MenuItemConstructorOptions[] = [
         {
@@ -55,6 +57,28 @@ async function createSettingsSubmenu(mainWindow: BrowserWindow | null): Promise<
                 const newEnabled = !nasProxyEnabled;
                 fnConfig.setNasProxyEnabled(newEnabled);
                 // 更新托盘菜单以刷新状态
+                updateTrayMenu();
+            }
+        },
+        {
+            type: 'separator'
+        },
+        {
+            label: '播放器: MPV',
+            type: 'radio',
+            checked: currentPlayerType === 'mpv',
+            click: () => {
+                fnConfig.setPlayerType('mpv');
+                updateTrayMenu();
+            }
+        },
+        {
+            label: '播放器: PotPlayer (Windows)',
+            type: 'radio',
+            checked: currentPlayerType === 'potplayer',
+            enabled: process.platform === 'win32',
+            click: () => {
+                fnConfig.setPlayerType('potplayer');
                 updateTrayMenu();
             }
         },
@@ -109,6 +133,54 @@ async function createSettingsSubmenu(mainWindow: BrowserWindow | null): Promise<
                 }
 
                 // 更新托盘菜单以刷新状态
+                updateTrayMenu();
+            }
+        },
+        {
+            label: `设置PotPlayer路径${currentPotPlayerPath ? ` (${currentPotPlayerPath})` : ''}`,
+            enabled: process.platform === 'win32',
+            click: async () => {
+                if (mainWindow) {
+                    const result = await dialog.showOpenDialog(mainWindow, {
+                        title: '选择PotPlayer播放器',
+                        properties: ['openFile'],
+                        filters: [
+                            { name: 'PotPlayer可执行文件', extensions: ['exe'] },
+                            { name: '所有文件', extensions: ['*'] }
+                        ]
+                    });
+
+                    if (!result.canceled && result.filePaths.length > 0) {
+                        const selectedPath = result.filePaths[0];
+                        fnConfig.setPotPlayerPath(selectedPath);
+
+                        try {
+                            const media = await import('../handlers/plugins/media.js');
+                            media.setPotPlayerPath(selectedPath);
+                            log.info(`PotPlayer路径已设置为: ${selectedPath}`);
+                        } catch (error) {
+                            log.error('刷新PotPlayer路径失败:', error);
+                        }
+
+                        updateTrayMenu();
+                    }
+                }
+            }
+        },
+        {
+            label: '清空PotPlayer路径',
+            enabled: process.platform === 'win32' && !!currentPotPlayerPath,
+            click: async () => {
+                fnConfig.setPotPlayerPath('');
+
+                try {
+                    const media = await import('../handlers/plugins/media.js');
+                    media.setPotPlayerPath(null);
+                    log.info('PotPlayer路径已清空，将使用自动检测');
+                } catch (error) {
+                    log.error('清空PotPlayer路径失败:', error);
+                }
+
                 updateTrayMenu();
             }
         }
@@ -254,7 +326,7 @@ async function updateTrayMenu(): Promise<void> {
 
 /**
  * 创建系统托盘
- * @param {BrowserWindow} mainWindow - 主窗口实例
+ * @param {BrowserWindow} mainWindowInstance - 主窗口实例
  */
 export async function createTray(mainWindowInstance: BrowserWindow): Promise<void> {
     // 保存窗口引用

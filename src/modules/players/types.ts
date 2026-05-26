@@ -57,7 +57,7 @@ export type Config = {
 // 播放器类型枚举
 export enum PlayerType {
     MPV = 'mpv',
-    // 可以扩展其他播放器类型
+    POTPLAYER = 'potplayer',
 }
 
 // 播放器抽象基类

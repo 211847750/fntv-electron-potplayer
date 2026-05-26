@@ -177,7 +177,36 @@ npm run build:linux
 
 ### 2. 能否支持potplayer？
 
-目前我这边没有使用potplayer的需求，如果需要的话可以自行修改源码适配一下，已留好interface，只需要适配。
+Windows 版本支持将 PotPlayer 作为可选外置播放器使用，默认仍使用 MPV。
+
+使用步骤：
+
+1. 先在 Windows 上安装 PotPlayer。
+2. 启动飞牛影视桌面端，右键系统托盘图标。
+3. 进入 `设置`，选择 `播放器: PotPlayer (Windows)`。
+4. 如果程序没有自动找到 PotPlayer，点击 `设置PotPlayer路径`，选择 PotPlayer 可执行文件，例如：
+
+```text
+C:\Program Files\DAUM\PotPlayer\PotPlayerMini64.exe
+C:\Program Files (x86)\DAUM\PotPlayer\PotPlayerMini.exe
+```
+
+5. 回到飞牛影视页面点击播放按钮，会使用 PotPlayer 打开当前视频。
+
+当前 PotPlayer 后端支持：
+
+- 使用本地代理地址播放飞牛视频；
+- 启动时按飞牛记录恢复播放进度；
+- 自动下载飞牛外置字幕，并通过 PotPlayer `/sub` 参数加载；
+- 后台定时读取 PotPlayer 当前进度并回传飞牛；
+- 退出播放器时保存最后播放进度。
+
+注意事项：
+
+- PotPlayer 支持仅限 Windows；macOS / Linux 仍使用 MPV。
+- PotPlayer 没有 MPV 那样的标准 IPC，进度读取依赖 Windows 消息轮询。
+- 字幕以启动时加载为主，播放过程中动态切换字幕不保证支持。
+- MPV 的弹幕、anime4K、脚本扩展等能力不会自动迁移到 PotPlayer。
 
 ### 3. 弹幕相关问题？
 

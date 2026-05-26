@@ -1,12 +1,7 @@
-import { app, BrowserWindow, dialog, Notification } from 'electron';
+import { app, dialog } from 'electron';
 import { spawn, ChildProcess } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
-import { registerAllPlugins } from '../handlers';
-import { getInstance as getUpdateChecker } from '../../modules/updater/updateChecker';
-import * as winctrl from './winctrl';
-import { createTray, showTrayNotification, destroyTray } from './tray';
-import { getMacCloseAction, setMacCloseAction, getTrayNotificationShown, setTrayNotificationShown } from './preferences';
 import * as log from '../../modules/logger';
 import { getDaemonInstance, ProxyDaemon } from './proxyDaemon';
 
@@ -32,7 +27,9 @@ function getProxyExecPath(): string {
         const contentsPath = path.dirname(path.dirname(appPath)); // 从app.asar向上两级到Contents
         return path.join(contentsPath, 'third_party', 'proxy', 'proxy');
     } else if (process.platform === 'win32') {
-        return ".\\third_party\\proxy\\proxy.exe";
+        const appPath = app.getAppPath();
+        const appRootPath = path.dirname(path.dirname(appPath));
+        return path.join(appRootPath, 'third_party', 'proxy', 'proxy.exe');
     } else {
         // Linux: 构建时只复制了proxy目录内容到third_party/proxy
         const appPath = app.getAppPath();

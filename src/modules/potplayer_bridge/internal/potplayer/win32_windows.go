@@ -1,0 +1,102 @@
+//go:build windows
+
+package potplayer
+
+import (
+	"errors"
+	"syscall"
+	"unsafe"
+)
+
+const (
+	wmUser           = 0x0400
+	potGetTotalTime  = 0x5002
+	potGetCurrent    = 0x5004
+	potSetCurrent    = 0x5005
+	potGetPlayStatus = 0x5006
+)
+
+var (
+	user32                    = syscall.NewLazyDLL("user32.dll")
+	procEnumWindows           = user32.NewProc("EnumWindows")
+	procIsWindowVisible       = user32.NewProc("IsWindowVisible")
+	procGetClassNameW         = user32.NewProc("GetClassNameW")
+	procSendMessageW          = user32.NewProc("SendMessageW")
+	procIsWindow              = user32.NewProc("IsWindow")
+	errEnumWindowsUnavailable = errors.New("EnumWindows unavailable")
+)
+
+func EnumPotPlayerWindows() ([]uintptr, error) {
+	var windows []uintptr
+
+	callback := syscall.NewCallback(func(hwnd uintptr, _ uintptr) uintptr {
+		if !IsWindowVisible(hwnd) {
+			return 1
+		}
+
+		className, err := GetClassName(hwnd)
+		if err == nil && (className == "PotPlayer64" || className == "PotPlayer") {
+			windows = append(windows, hwnd)
+		}
+
+		return 1
+	})
+
+	ret, _, err := procEnumWindows.Call(callback, 0)
+	if ret == 0 {
+		if err != syscall.Errno(0) {
+			return nil, err
+		}
+		return nil, errEnumWindowsUnavailable
+	}
+
+	return windows, nil
+}
+
+func IsWindowVisible(hwnd uintptr) bool {
+	ret, _, _ := procIsWindowVisible.Call(hwnd)
+	return ret != 0
+}
+
+func IsWindowHandle(hwnd uintptr) bool {
+	ret, _, _ := procIsWindow.Call(hwnd)
+	return ret != 0
+}
+
+func GetClassName(hwnd uintptr) (string, error) {
+	buf := make([]uint16, 256)
+	ret, _, err := procGetClassNameW.Call(hwnd, uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)))
+	if ret == 0 {
+		if err != syscall.Errno(0) {
+			return "", err
+		}
+		return "", errors.New("GetClassName returned empty class")
+	}
+
+	return syscall.UTF16ToString(buf[:ret]), nil
+}
+
+func ReadState(hwnd uintptr) (State, error) {
+	if hwnd == 0 || !IsWindowHandle(hwnd) {
+		return State{}, errors.New("potplayer window is closed")
+	}
+
+	return State{
+		PosMs:  sendMessage(hwnd, wmUser, potGetCurrent, 0),
+		DurMs:  sendMessage(hwnd, wmUser, potGetTotalTime, 0),
+		Status: sendMessage(hwnd, wmUser, potGetPlayStatus, 0),
+	}, nil
+}
+
+func sendMessage(hwnd uintptr, msg uintptr, wParam uintptr, lParam uintptr) int64 {
+	ret, _, _ := procSendMessageW.Call(hwnd, msg, wParam, lParam)
+	return int64(ret)
+}
+
+func SendSeek(hwnd uintptr, posMs int64) {
+	if hwnd == 0 || posMs <= 0 || !IsWindowHandle(hwnd) {
+		return
+	}
+
+	sendMessage(hwnd, wmUser, potSetCurrent, uintptr(posMs))
+}

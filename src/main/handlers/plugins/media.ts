@@ -1,4 +1,4 @@
-import { BrowserWindow, dialog, IpcMainEvent } from 'electron';
+import { dialog, IpcMainEvent } from 'electron';
 import * as ply from '../../../modules/players';
 import * as fn from '../../../modules/fn_api/api';
 import * as fnConfig from '../../../modules/fn_config/config';
@@ -7,7 +7,7 @@ import { registerAppHook } from '../core/appHook';
 import * as log from '../../../modules/logger';
 import * as os from 'os';
 import * as fs from 'fs';
-import { PlayStatusData, ItemListRequest } from '../../../modules/fn_api/types';
+import { ItemListRequest } from '../../../modules/fn_api/types';
 import { escape } from 'querystring';
 import { isTrusted } from '../../../modules/cert_trust';
 import { checkLibraryPageUrl } from '../../common/utils';
@@ -28,10 +28,16 @@ let currentPlayer: ply.BasePlayer | null = null;
 
 // MPV播放器路径缓存
 let cachedPlayerPath: string | null = null;
+let cachedPotPlayerPath: string | null = null;
 
 // 设置MPV播放器路径（用于覆盖默认路径）
 export function setMpvPlayerPath(path: string | null): void {
     cachedPlayerPath = path;
+}
+
+// 设置PotPlayer播放器路径（用于覆盖默认路径）
+export function setPotPlayerPath(path: string | null): void {
+    cachedPotPlayerPath = path;
 }
 
 /**
@@ -95,6 +101,51 @@ function getMpvPlayerPath(): string | undefined {
     }
 
     return undefined;
+}
+
+function getPotPlayerPath(): string | undefined {
+    if (cachedPotPlayerPath) {
+        return cachedPotPlayerPath;
+    }
+
+    if (process.platform !== 'win32') {
+        dialog.showErrorBox('错误', 'PotPlayer播放器仅支持Windows平台');
+        log.error('PotPlayer播放器仅支持Windows平台');
+        return undefined;
+    }
+
+    const configuredPath = fnConfig.getPotPlayerPath();
+    if (configuredPath && fs.existsSync(configuredPath)) {
+        cachedPotPlayerPath = configuredPath;
+        return cachedPotPlayerPath;
+    }
+
+    const potPlayerPaths = [
+        'C:\\Program Files\\DAUM\\PotPlayer\\PotPlayerMini64.exe',
+        'C:\\Program Files\\DAUM\\PotPlayer\\PotPlayer64.exe',
+        'C:\\Program Files (x86)\\DAUM\\PotPlayer\\PotPlayerMini.exe',
+        'C:\\Program Files (x86)\\DAUM\\PotPlayer\\PotPlayer.exe'
+    ];
+
+    for (const path of potPlayerPaths) {
+        if (fs.existsSync(path)) {
+            cachedPotPlayerPath = path;
+            log.info(`找到PotPlayer播放器路径: ${path}`);
+            return cachedPotPlayerPath;
+        }
+    }
+
+    dialog.showErrorBox('错误', '未找到PotPlayer播放器，请在托盘设置中指定PotPlayerMini64.exe路径');
+    log.error('未找到PotPlayer播放器，请在托盘设置中指定PotPlayerMini64.exe路径');
+    return undefined;
+}
+
+function getCurrentPlayerType(): ply.PlayerType {
+    return fnConfig.getPlayerType() === 'potplayer' ? ply.PlayerType.POTPLAYER : ply.PlayerType.MPV;
+}
+
+function getPlayerPath(playerType: ply.PlayerType): string | undefined {
+    return playerType === ply.PlayerType.POTPLAYER ? getPotPlayerPath() : getMpvPlayerPath();
 }
 
 // 刷新窗口
@@ -220,7 +271,7 @@ function eventHandler(fnapi: fn.ApiService) {
 }
 
 // 处理播放事件
-async function handlePlayMovie(event: IpcMainEvent, { id, token, sourceIndex }: PlayRequest): Promise<void> {
+async function handlePlayMovie(_event: IpcMainEvent, { id, token, sourceIndex }: PlayRequest): Promise<void> {
     // 检查是否已有播放器在播放
     if (currentPlayer && currentPlayer.isPlaying()) {
         log.warn('已有播放器在播放，无法重复播放');
@@ -298,20 +349,27 @@ async function handlePlayMovie(event: IpcMainEvent, { id, token, sourceIndex }: 
 
     // 寻找当前播放的媒体在数组中的位置
     const currentIndex = playList.findIndex(item => item.itemGuid === itemGuid);
+    const playableIndex = currentIndex >= 0 ? currentIndex : 0;
 
     // 检查是否选择了特定的播放源索引
     if (sourceIndex > 0) {
         log.info(`使用指定的播放源索引: ${sourceIndex}`);
         // 修改播放列表中的源索引
-        playList[currentIndex].playLink = getProxyUrl(config, playList[currentIndex].itemGuid, sourceIndex);
+        playList[playableIndex].playLink = getProxyUrl(config, playList[playableIndex].itemGuid, sourceIndex);
     }
 
-    // 获取MPV播放器路径
-    const playerPath = getMpvPlayerPath();
+    const playerType = getCurrentPlayerType();
+    const playerPath = getPlayerPath(playerType);
     if (!playerPath) {
-        log.error('无法找到MPV播放器路径');
+        log.error('无法找到播放器路径');
         return;
     }
+
+    const extraArgs = playerType === ply.PlayerType.MPV ? [
+        '--force-window=immediate',
+        '--network-timeout=180',
+        // "--user-agent=Lavf/59.27.100",
+    ] : [];
 
     let playConfig: ply.Config = {
         fnapi: fnapi,
@@ -319,23 +377,19 @@ async function handlePlayMovie(event: IpcMainEvent, { id, token, sourceIndex }: 
         // headers: {
         //     Authorization: token,
         // },
-        extraArgs: [
-            '--force-window=immediate',
-            '--network-timeout=180',
-            // "--user-agent=Lavf/59.27.100",
-        ],
+        extraArgs,
         debug: true,
         onEvent: eventHandler(fnapi)
     };
 
     // 创建播放器实例
-    const player = ply.PlayerFactory.createPlayer(ply.PlayerType.MPV, playConfig);
+    const player = ply.PlayerFactory.createPlayer(playerType, playConfig);
 
     // 保存全局引用
     currentPlayer = player;
 
     // 开始播放
-    player.playList(playList, currentIndex);
+    player.playList(playList, playableIndex);
 }
 
 // 生成代理URL
@@ -386,6 +440,7 @@ function handleBeforeQuit(): void {
 
     // 清理播放器路径缓存
     cachedPlayerPath = null;
+    cachedPotPlayerPath = null;
 }
 
 // 注册媒体播放处理器
@@ -395,6 +450,12 @@ function init(): void {
     if (configMpvPath) {
         setMpvPlayerPath(configMpvPath);
         log.info(`从配置中加载MPV播放器路径: ${configMpvPath}`);
+    }
+
+    const configPotPlayerPath = fnConfig.getPotPlayerPath();
+    if (configPotPlayerPath) {
+        setPotPlayerPath(configPotPlayerPath);
+        log.info(`从配置中加载PotPlayer播放器路径: ${configPotPlayerPath}`);
     }
 
     registerHandler('play-movie', handlePlayMovie);

@@ -150,6 +150,12 @@ func PlayVideoHandler(c *gin.Context) {
 		// 只有请求 NAS 时才需要 Authorization Token
 		extraHeaders["Authorization"] = params.Token
 		extraHeaders["Cookie"] = extraHeaders["Cookie"] + "; mode=relay"
+
+		// 飞牛 media/range 接口要求 Range 请求。PotPlayer 和浏览器可能先发不带 Range 的探测 GET，
+		// 直接透传会导致上游返回 416 Requested Range Not Satisfiable。
+		if extraHeaders["Range"] == "" {
+			extraHeaders["Range"] = "bytes=0-"
+		}
 	}
 
 	// 执行代理

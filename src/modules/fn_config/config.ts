@@ -25,7 +25,9 @@ export interface Config {
     macCloseAction?: 'minimize' | 'quit' | 'ask';
     trayNotificationShown?: boolean;
     nasProxyEnabled?: boolean;
+    playerType?: 'mpv' | 'potplayer';
     mpvPlayerPath?: string;
+    potPlayerPath?: string;
     exitMode?: 'direct' | 'minimize' | 'ask';
 }
 
@@ -274,6 +276,36 @@ export function setMpvPlayerPath(path: string | null): void {
     fs.writeFileSync(getConfigPath(), JSON.stringify(config, null, 2));
 }
 
+// 获取当前外置播放器类型
+export function getPlayerType(): 'mpv' | 'potplayer' {
+    const config: Config = readConfig() || {};
+    return config.playerType === 'potplayer' ? 'potplayer' : 'mpv';
+}
+
+// 设置当前外置播放器类型
+export function setPlayerType(playerType: 'mpv' | 'potplayer'): void {
+    const config: Config = readConfig() || {};
+    config.playerType = playerType;
+    fs.writeFileSync(getConfigPath(), JSON.stringify(config, null, 2));
+}
+
+// 获取PotPlayer播放器路径配置
+export function getPotPlayerPath(): string | undefined {
+    const config: Config = readConfig() || {};
+    return config.potPlayerPath;
+}
+
+// 设置PotPlayer播放器路径配置
+export function setPotPlayerPath(path: string | null): void {
+    const config: Config = readConfig() || {};
+    if (path === null || path === '') {
+        delete config.potPlayerPath;
+    } else {
+        config.potPlayerPath = path;
+    }
+    fs.writeFileSync(getConfigPath(), JSON.stringify(config, null, 2));
+}
+
 // 向后兼容的函数
 export function getDownloadProxyUrl(): string {
     return getDownloadProxyConfig().proxyUrl;
@@ -318,8 +350,12 @@ module.exports = {
     setMacCloseAction,
     getTrayNotificationShown,
     setTrayNotificationShown,
+    getPlayerType,
+    setPlayerType,
     getMpvPlayerPath,
     setMpvPlayerPath,
+    getPotPlayerPath,
+    setPotPlayerPath,
     getExitMode,
     setExitMode
 };
