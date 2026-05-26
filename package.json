@@ -1,7 +1,7 @@
 {
-    "name": "fntv",
-    "version": "2.6.1",
-    "description": "A fntv app built with Electron",
+    "name": "fntv-electron-potplayer",
+    "version": "0.1.0",
+    "description": "A fntv Electron fork with PotPlayer bridge support",
     "main": "dest/main/main.js",
     "scripts": {
         "build:proxy:win": "mkdir -p third_party/proxy .cache/go-build && export GOCACHE=\"$PWD/.cache/go-build\" && cd src/modules/proxy && GOOS=windows GOARCH=amd64 go build -o ../../../third_party/proxy/proxy.exe",
@@ -60,9 +60,9 @@
             "output": "release"
         },
         "icon": "build/icon.ico",
-        "productName": "飞牛影视",
-        "artifactName": "FNMedia_${version}_${os}_${arch}.${ext}",
-        "appId": "com.qiaokes.fntv",
+        "productName": "FNMedia PotPlayer",
+        "artifactName": "FNMedia-PotPlayer_${version}_${os}_${arch}.${ext}",
+        "appId": "io.github.fntv-potplayer.fntv",
         "compression": "normal",
         "win": {
             "target": [
@@ -133,7 +133,7 @@
             ]
         },
         "dmg": {
-            "title": "FNMedia_${version}_${arch}",
+            "title": "FNMedia-PotPlayer_${version}_${arch}",
             "icon": "build/icon.icns",
             "window": {
                 "width": 540,
@@ -166,8 +166,8 @@
             "icon": "build/icon.png",
             "desktop": {
                 "entry": {
-                    "Name": "飞牛影视",
-                    "Comment": "飞牛影视播放器",
+                    "Name": "FNMedia PotPlayer",
+                    "Comment": "飞牛影视 PotPlayer fork",
                     "Categories": "AudioVideo;Video;Player;"
                 }
             },

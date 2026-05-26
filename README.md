@@ -1,6 +1,43 @@
-﻿# fntv-electron 桌面客户端
+﻿# fntv-electron-potplayer
 
-飞牛影视桌面客户端，基于Electron构建，提供更好的桌面体验和增强功能。
+本项目基于 [QiaoKes/fntv-electron](https://github.com/QiaoKes/fntv-electron) fork，主要增加 Windows PotPlayer 外置播放器支持。
+
+本项目不是 QiaoKes/fntv-electron 官方版本，也与飞牛影视官方无关。上游项目采用 GPL-3.0 许可证，本 fork 保留原许可证、原作者声明和上游来源。
+
+## Fork 信息
+
+- 上游仓库：[QiaoKes/fntv-electron](https://github.com/QiaoKes/fntv-electron)
+- 当前 fork 重点：PotPlayer 播放、进度读取、进度回传、记录位置恢复
+- License：[GPL-3.0](LICENSE)
+- 发布包命名：`FNMedia-PotPlayer_${version}_${os}_${arch}.${ext}`
+- 当前版本：`0.1.0`
+- 维护状态：主要用于 PotPlayer 支持实验与自用增强，不保证与上游版本同步更新
+- 检查更新：默认不再指向上游 release；如需启用，请在 `src/modules/updater/updateChecker.ts` 中配置你的 fork 仓库 owner/repo
+
+## PotPlayer 支持范围
+
+当前 PotPlayer 支持仅面向 Windows：
+
+- 调起 PotPlayer 播放飞牛影视视频；
+- 使用本地代理地址播放；
+- 自动加载飞牛外置字幕；
+- 启动时按飞牛记录恢复播放位置；
+- 每秒读取 PotPlayer 当前进度、总时长、播放状态；
+- 将播放进度回传飞牛；
+- 退出 PotPlayer 时保存最后播放进度。
+
+当前限制：
+
+- 需要本机安装 PotPlayer；
+- 主要按 `PotPlayer64` / `PotPlayer` 窗口类名绑定播放器窗口；
+- 进度读取和初始 seek 依赖 PotPlayer 的 Windows 消息接口；
+- 初始 seek 使用启动参数和 bridge 二次 seek 兜底，不保证所有 PotPlayer 版本行为一致；
+- 仅验证 Windows 环境，macOS / Linux 仍建议使用 MPV；
+- MPV 的弹幕、anime4K、脚本扩展等能力不会自动迁移到 PotPlayer。
+
+## 原项目简介
+
+飞牛影视桌面客户端，基于 Electron 构建，提供更好的桌面体验和增强功能。
 
 <img src="resource/docs/switch.png" width="90%">
 <img src="resource/docs/simple.png" width="90%">
@@ -111,9 +148,9 @@
 
 ### 预编译版本
 
-前往 [Releases页面](https://github.com/QiaoKes/fntv-electron/releases) 下载最新版本：
+前往本 fork 的 Releases 页面下载 PotPlayer 修改版。
 
-* 文件名: `FNMedia_${version}_${os}_${arch}.${ext}`
+* 文件名: `FNMedia-PotPlayer_${version}_${os}_${arch}.${ext}`
 
 1.字段含义：
 
@@ -124,7 +161,7 @@
 
 2.安装步骤
 
-- windows直接安装即可使用
+- Windows 直接安装即可使用；如需使用 PotPlayer，请先安装 PotPlayer 并在托盘设置中选择 `播放器: PotPlayer (Windows)`
 - macos请使用brew安装mpv
 
 ```bash
@@ -140,8 +177,8 @@ sudo find "/Applications/飞牛影视.app" -exec xattr -d com.apple.quarantine {
 1. 克隆仓库：
 
 ```bash
-git clone https://github.com/QiaoKes/fntv-electron.git
-cd fntv-electron
+git clone <your-fork-url>
+cd fntv-electron-potplayer
 ```
 
 2. 安装依赖：
@@ -177,7 +214,7 @@ npm run build:linux
 
 ### 2. 能否支持potplayer？
 
-Windows 版本支持将 PotPlayer 作为可选外置播放器使用，默认仍使用 MPV。
+本 fork 的 Windows 版本支持将 PotPlayer 作为可选外置播放器使用，默认仍使用 MPV。
 
 使用步骤：
 
@@ -193,18 +230,19 @@ C:\Program Files (x86)\DAUM\PotPlayer\PotPlayerMini.exe
 
 5. 回到飞牛影视页面点击播放按钮，会使用 PotPlayer 打开当前视频。
 
-当前 PotPlayer 后端支持：
+当前 PotPlayer bridge 支持：
 
 - 使用本地代理地址播放飞牛视频；
 - 启动时按飞牛记录恢复播放进度；
 - 自动下载飞牛外置字幕，并通过 PotPlayer `/sub` 参数加载；
-- 后台定时读取 PotPlayer 当前进度并回传飞牛；
+- 后台每秒读取 PotPlayer 当前进度并回传飞牛；
 - 退出播放器时保存最后播放进度。
 
 注意事项：
 
 - PotPlayer 支持仅限 Windows；macOS / Linux 仍使用 MPV。
-- PotPlayer 没有 MPV 那样的标准 IPC，进度读取依赖 Windows 消息轮询。
+- PotPlayer 没有 MPV 那样的标准 IPC，进度读取依赖 Windows 窗口消息。
+- 初始 seek 会先使用 PotPlayer 启动参数，再由 bridge 绑定窗口后二次发送 seek。
 - 字幕以启动时加载为主，播放过程中动态切换字幕不保证支持。
 - MPV 的弹幕、anime4K、脚本扩展等能力不会自动迁移到 PotPlayer。
 
@@ -246,6 +284,7 @@ third_party\fntv-mpv\portable_config\input.conf
 
 本项目参考以下开源项目：
 
+- [QiaoKes/fntv-electron](https://github.com/QiaoKes/fntv-electron) - 本 fork 的上游项目
 - [enable-chromium-hevc-hardware-decoding](https://github.com/StaZhu/enable-chromium-hevc-hardware-decoding) - Chromium HEVC硬解码支持
 - [electron-media-patch](https://github.com/5rahim/electron-media-patch) - Electron硬解码补丁
 - [fnToPotplayer](https://github.com/gudqs7/fnToPotplayer) - 飞牛影视调用Potplayer
@@ -262,6 +301,8 @@ third_party\fntv-mpv\portable_config\input.conf
 
 Copyright (c) 2025 Tag mig hånden
 
+本 fork 基于 QiaoKes/fntv-electron 修改，保留原项目许可证和版权声明。修改版源码与二进制分发应继续遵守 GPL-3.0。
+
 ---
 
-**温馨提示**：本项目为第三方客户端，与飞牛影视官方无关。使用前请确保遵守相关服务条款。
+**温馨提示**：本项目为第三方 fork，与飞牛影视官方无关，也不是 QiaoKes/fntv-electron 官方发布版。使用前请确保遵守相关服务条款。

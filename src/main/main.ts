@@ -47,7 +47,7 @@ if (!gotTheLock) {
     app.whenReady().then(async () => {
         try {
             // 初始化日志系统
-            log.info('=== 飞牛影视启动 ===');
+            log.info('=== FNMedia PotPlayer 启动 ===');
             log.info('应用版本:', app.getVersion());
             log.info('Electron版本:', process.versions.electron);
             log.info('Node.js版本:', process.versions.node);
@@ -169,7 +169,7 @@ function setupWindowEvents(mainWindow: BrowserWindow): void {
                         const result = await dialog.showMessageBox(mainWindow, {
                             type: 'question',
                             title: '退出确认',
-                            message: '确定要退出飞牛影视吗？',
+                            message: '确定要退出 FNMedia PotPlayer 吗？',
                             detail: '您可以选择完全退出应用或最小化到托盘。',
                             buttons: ['退出应用', '最小化到托盘', '取消'],
                             defaultId: 1,
@@ -213,7 +213,7 @@ function showMacNotification(): void {
     if (!getTrayNotificationShown()) {
         if (Notification.isSupported()) {
             const notification = new Notification({
-                title: '飞牛影视',
+                title: 'FNMedia PotPlayer',
                 body: '应用已隐藏到状态栏，点击状态栏图标可以恢复窗口',
                 silent: false
             });

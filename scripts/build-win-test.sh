@@ -6,6 +6,7 @@ cd "$ROOT_DIR"
 
 export GOPROXY="${GOPROXY:-https://goproxy.cn,direct}"
 export GOCACHE="${GOCACHE:-$ROOT_DIR/.cache/go-build}"
+APP_VERSION="$(node -p "require('./package.json').version")"
 
 mkdir -p "$GOCACHE"
 
@@ -22,4 +23,4 @@ echo "==> Building Windows installer"
 npx electron-builder --win --publish=never
 
 echo "==> Done"
-echo "Installer: $ROOT_DIR/release/FNMedia_2.6.1_win_x64.exe"
+echo "Installer: $ROOT_DIR/release/FNMedia-PotPlayer_${APP_VERSION}_win_x64.exe"

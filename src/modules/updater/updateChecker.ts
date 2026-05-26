@@ -56,12 +56,12 @@ export class UpdateChecker {
     private maxRetries: number;
     private baseRetryDelay: number;
 
-    constructor(owner: string = 'QiaoKes', repo: string = 'fntv-electron', currentVersion: string | null = null) {
+    constructor(owner: string = '', repo: string = '', currentVersion: string | null = null) {
         this.owner = owner;
         this.repo = repo;
         // 如果传入了版本号就使用传入的，否则尝试从app获取，最后使用默认值
         this.currentVersion = currentVersion || (app ? app.getVersion() : 'unknown');
-        this.githubApiUrl = `https://api.github.com/repos/${owner}/${repo}/releases/latest`;
+        this.githubApiUrl = owner && repo ? `https://api.github.com/repos/${owner}/${repo}/releases/latest` : '';
         // 重试配置
         this.maxRetries = 3;
         this.baseRetryDelay = 1000; // 基础延迟1秒
@@ -81,13 +81,17 @@ export class UpdateChecker {
      * @returns 更新信息
      */
     async checkForUpdatesWithRetry(retryCount: number = 0): Promise<UpdateInfo> {
+        if (!this.githubApiUrl) {
+            throw new Error('检查更新仓库未配置');
+        }
+
         try {
             log.info(`检查更新: 当前版本 ${this.currentVersion}${retryCount > 0 ? ` (重试 ${retryCount}/${this.maxRetries})` : ''}`);
             
             const response: AxiosResponse<GitHubRelease> = await axios.get(this.githubApiUrl, {
                 timeout: 10000,
                 headers: {
-                    'User-Agent': `fntv-electron/${this.currentVersion}`
+                    'User-Agent': `fntv-electron-potplayer/${this.currentVersion}`
                 }
             });
 
@@ -171,7 +175,7 @@ export class UpdateChecker {
         log.info(`当前平台: ${platform}, 架构: ${arch}`);
 
         // 根据实际构建配置选择合适的安装包
-        // 文件命名格式: FNMedia_${version}_${os}_${arch}.${ext}
+        // 文件命名格式: FNMedia-PotPlayer_${version}_${os}_${arch}.${ext}
         let patterns: RegExp[] = [];
 
         switch (platform) {
@@ -179,7 +183,7 @@ export class UpdateChecker {
                 // Windows: 仅支持 x64
                 if (arch === 'x64') {
                     patterns = [
-                        /FNMedia_.*_win_x64\.exe$/i,
+                        /FNMedia-PotPlayer_.*_win_x64\.exe$/i,
                         /_win_x64\.exe$/i,
                         /win.*x64.*\.exe$/i
                     ];
@@ -193,13 +197,13 @@ export class UpdateChecker {
                 // macOS: 支持 x64 和 arm64
                 if (arch === 'arm64') {
                     patterns = [
-                        /FNMedia_.*_mac_arm64\.dmg$/i,
+                        /FNMedia-PotPlayer_.*_mac_arm64\.dmg$/i,
                         /_mac_arm64\.dmg$/i,
                         /mac.*arm64.*\.dmg$/i
                     ];
                 } else if (arch === 'x64') {
                     patterns = [
-                        /FNMedia_.*_mac_x64\.dmg$/i,
+                        /FNMedia-PotPlayer_.*_mac_x64\.dmg$/i,
                         /_mac_x64\.dmg$/i,
                         /mac.*x64.*\.dmg$/i
                     ];
@@ -213,13 +217,13 @@ export class UpdateChecker {
                 // Linux: 支持 x64 和 arm64
                 if (arch === 'x64') {
                     patterns = [
-                        /FNMedia_.*_linux_x64\.AppImage$/i,
+                        /FNMedia-PotPlayer_.*_linux_x64\.AppImage$/i,
                         /_linux_x64\.AppImage$/i,
                         /linux.*x64.*\.AppImage$/i
                     ];
                 } else if (arch === 'arm64') {
                     patterns = [
-                        /FNMedia_.*_linux_arm64\.AppImage$/i,
+                        /FNMedia-PotPlayer_.*_linux_arm64\.AppImage$/i,
                         /_linux_arm64\.AppImage$/i,
                         /linux.*arm64.*\.AppImage$/i
                     ];
@@ -279,7 +283,7 @@ export class UpdateChecker {
         const result: DialogResult = await dialog.showMessageBox({
             type: 'info',
             title: '发现新版本',
-            message: `飞牛影视有新版本可用！`,
+            message: `FNMedia PotPlayer 有新版本可用！`,
             detail: `当前版本: ${this.currentVersion}\n最新版本: ${latestVersion}\n\n更新内容:\n${releaseNotes || '暂无更新说明'}`,
             buttons: ['立即下载', '查看详情', '稍后提醒'],
             defaultId: 0,
@@ -374,12 +378,12 @@ let instance: UpdateChecker | null = null;
 
 /**
  * 获取 UpdateChecker 单例实例
- * @param owner - GitHub 仓库所有者，默认 'QiaoKes'
- * @param repo - GitHub 仓库名称，默认 'fntv-electron'
+ * @param owner - GitHub 仓库所有者，fork 发布前按需配置
+ * @param repo - GitHub 仓库名称，fork 发布前按需配置
  * @param currentVersion - 当前版本号，默认从 app.getVersion() 获取
  * @returns UpdateChecker 实例
  */
-export function getInstance(owner: string = 'QiaoKes', repo: string = 'fntv-electron', currentVersion: string | null = null): UpdateChecker {
+export function getInstance(owner: string = '', repo: string = '', currentVersion: string | null = null): UpdateChecker {
     if (!instance) {
         instance = new UpdateChecker(owner, repo, currentVersion);
     }

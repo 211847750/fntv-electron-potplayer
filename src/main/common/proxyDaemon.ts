@@ -79,7 +79,7 @@ export class ProxyDaemon {
             dialog.showMessageBox({
                 type: 'error',
                 title: '应用即将退出',
-                message: '飞牛影视的核心服务（Proxy）多次启动失败，无法继续运行。',
+                message: 'FNMedia PotPlayer 的核心服务（Proxy）多次启动失败，无法继续运行。',
                 buttons: ['退出应用']
             }).then(() => {
                 // 延迟退出，确保日志和清理操作能够完成

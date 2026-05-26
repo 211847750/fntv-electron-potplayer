@@ -309,7 +309,7 @@ async function updateTrayMenu(): Promise<void> {
             type: 'separator'
         },
         {
-            label: process.platform === 'darwin' ? '退出飞牛影视' : '退出',
+            label: process.platform === 'darwin' ? '退出 FNMedia PotPlayer' : '退出',
             click: () => {
                 // 托盘菜单中的退出按钮直接退出应用
                 (app as any).isQuiting = true;
@@ -381,7 +381,7 @@ export async function createTray(mainWindowInstance: BrowserWindow): Promise<voi
     tray = new Tray(icon);
 
     // 设置托盘提示文字
-    tray.setToolTip('飞牛影视');
+    tray.setToolTip('FNMedia PotPlayer');
 
     // 初始创建菜单
     await updateTrayMenu();
@@ -418,7 +418,7 @@ export function showTrayNotification(): void {
     if (process.platform === 'win32' && !getTrayNotificationShown() && tray) {
         tray.displayBalloon({
             iconType: 'info',
-            title: '飞牛影视',
+            title: 'FNMedia PotPlayer',
             content: '应用已最小化到托盘，双击托盘图标或右键菜单可以恢复窗口'
         });
         setTrayNotificationShown(true); // 标记已显示过提示
