@@ -276,10 +276,9 @@ export function setMpvPlayerPath(path: string | null): void {
     fs.writeFileSync(getConfigPath(), JSON.stringify(config, null, 2));
 }
 
-// 获取当前外置播放器类型
+// 获取当前外置播放器类型（PotPlayer fork，固定返回 potplayer）
 export function getPlayerType(): 'mpv' | 'potplayer' {
-    const config: Config = readConfig() || {};
-    return config.playerType === 'potplayer' ? 'potplayer' : 'mpv';
+    return 'potplayer';
 }
 
 // 设置当前外置播放器类型

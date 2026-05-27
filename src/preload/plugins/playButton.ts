@@ -175,7 +175,7 @@ async function injectCustomPlayBtn(): Promise<void> {
         interceptOriginalButton();
     } else {
         // 否则添加额外的MPV播放按钮
-        clonePlayBtnAndInject((button) => sendPlayEventToMain(button), 'MPV播放');
+        clonePlayBtnAndInject((button) => sendPlayEventToMain(button), 'PotPlayer播放');
     }
 }
 

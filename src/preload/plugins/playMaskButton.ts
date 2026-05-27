@@ -28,7 +28,7 @@ async function getPlayButtonConfig(): Promise<{ hideOriginalPlayButton: boolean 
     });
 }
 
-// 调用MPV播放器的公共方法
+// 调用外置播放器的公共方法
 async function playWithMpv(button: HTMLElement): Promise<void> {
     // 先尝试简化的 DOM 方法
     const domResult = sendPlayEventToMain(button);
@@ -304,9 +304,9 @@ function createPlayModal(originalButton: HTMLElement): void {
         box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
     `;
 
-    // MPV播放按钮
+    // PotPlayer播放按钮
     const mpvPlayBtn = document.createElement('button');
-    mpvPlayBtn.textContent = 'MPV播放';
+    mpvPlayBtn.textContent = 'PotPlayer播放';
     mpvPlayBtn.style.cssText = `
         padding: 12px 24px;
         background: rgba(102, 126, 234, 0.8);
@@ -417,7 +417,7 @@ function createPlayModal(originalButton: HTMLElement): void {
 
     mpvPlayBtn.addEventListener('click', async () => {
         modalOverlay.remove();
-        logger.info('用户选择了MPV播放');
+        logger.info('用户选择了PotPlayer播放');
 
         // 调用MPV播放器
         await playWithMpv(originalButton);
@@ -482,7 +482,7 @@ function interceptMaskButton(): void {
             
             if (config.hideOriginalPlayButton) {
                 // 如果隐藏原有播放按钮，直接调用MPV播放器
-                logger.info('Play button click intercepted, directly playing with MPV');
+                logger.info('Play button click intercepted, directly playing with PotPlayer');
                 
                 // 调用MPV播放器
                 await playWithMpv(btn);
