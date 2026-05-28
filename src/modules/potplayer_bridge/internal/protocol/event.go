@@ -8,19 +8,24 @@ import (
 )
 
 const (
-	EventReady    = "ready"
-	EventProgress = "progress"
-	EventExit     = "exit"
-	EventError    = "error"
+	EventReady          = "ready"
+	EventProgress       = "progress"
+	EventExit           = "exit"
+	EventError          = "error"
+	EventEpisodeChanged = "episodeChanged"
+	EventSubtitleLoaded = "subtitleLoaded"
+	EventClosed         = "closed"
 )
 
 type Event struct {
-	Type    string  `json:"type"`
-	HWND    uintptr `json:"hwnd,omitempty"`
-	PosMs   int64   `json:"posMs,omitempty"`
-	DurMs   int64   `json:"durMs,omitempty"`
-	Status  int64   `json:"status,omitempty"`
-	Message string  `json:"message,omitempty"`
+	Type      string  `json:"type"`
+	HWND      uintptr `json:"hwnd,omitempty"`
+	PosMs     int64   `json:"posMs,omitempty"`
+	DurMs     int64   `json:"durMs,omitempty"`
+	Status    int64   `json:"status,omitempty"`
+	Message   string  `json:"message,omitempty"`
+	Index     *int    `json:"index,omitempty"`
+	EpisodeID string  `json:"episodeId,omitempty"`
 }
 
 type Writer struct {

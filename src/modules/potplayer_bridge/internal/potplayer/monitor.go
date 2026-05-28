@@ -1,7 +1,13 @@
 package potplayer
 
 import (
+	"bufio"
+	"encoding/json"
 	"errors"
+	"os"
+	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	"fn-potplayer-bridge/internal/protocol"
@@ -39,24 +45,211 @@ func PlayAndMonitor(req PlayRequest, events *protocol.Writer) int {
 	ticker := time.NewTicker(req.Interval)
 	defer ticker.Stop()
 
+	cmdChan := make(chan Command, 16)
+	go readStdinCommands(cmdChan)
+
+	playlistEntries := readPlaylistEntries(req.PlaylistPath)
+	var lastTitle string
+
 	for {
-		state, err := ReadState(hwnd)
-		if err != nil {
-			if IsWindowHandle(hwnd) {
-				events.Write(protocol.Event{Type: protocol.EventError, Message: err.Error(), PosMs: last.PosMs, DurMs: last.DurMs, Status: last.Status})
-				<-ticker.C
-				continue
+		select {
+		case cmd := <-cmdChan:
+			handleCommand(hwnd, cmd, events)
+		case <-ticker.C:
+			state, err := ReadState(hwnd)
+			if err != nil {
+				if IsWindowHandle(hwnd) {
+					events.Write(protocol.Event{Type: protocol.EventError, Message: err.Error(), PosMs: last.PosMs, DurMs: last.DurMs, Status: last.Status})
+					continue
+				}
+
+				events.Write(protocol.Event{Type: protocol.EventClosed, PosMs: last.PosMs, DurMs: last.DurMs, Status: -1})
+				return 0
 			}
 
-			events.Write(protocol.Event{Type: protocol.EventExit, PosMs: last.PosMs, DurMs: last.DurMs, Status: -1})
-			return 0
+			state.Title = readWindowTitle(hwnd)
+			seek.Apply(hwnd, state)
+
+			if state.Title != lastTitle && state.Title != "" {
+				lastTitle = state.Title
+				events.Write(buildEpisodeChangedEvent(state.Title, playlistEntries))
+			}
+
+			last = state
+			writeStateEvent(events, state)
+		}
+	}
+}
+
+type playlistEntry struct {
+	Index     int
+	Title     string
+	URL       string
+	EpisodeID string
+}
+
+func readPlaylistEntries(playlistPath string) []playlistEntry {
+	if strings.TrimSpace(playlistPath) == "" {
+		return nil
+	}
+
+	file, err := os.Open(playlistPath)
+	if err != nil {
+		return nil
+	}
+	defer file.Close()
+
+	entries := map[int]*playlistEntry{}
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(strings.TrimPrefix(scanner.Text(), "\ufeff"))
+		parts := strings.SplitN(line, "*", 3)
+		if len(parts) != 3 {
+			continue
 		}
 
-		last = state
-		seek.Apply(hwnd, state)
-		writeStateEvent(events, state)
-		<-ticker.C
+		playlistIndex, err := strconv.Atoi(parts[0])
+		if err != nil || playlistIndex <= 0 {
+			continue
+		}
+
+		entry := entries[playlistIndex]
+		if entry == nil {
+			entry = &playlistEntry{Index: playlistIndex - 1}
+			entries[playlistIndex] = entry
+		}
+
+		switch parts[1] {
+		case "file":
+			entry.URL = strings.TrimSpace(parts[2])
+			entry.EpisodeID = extractEpisodeID(entry.URL)
+		case "title":
+			entry.Title = strings.TrimSpace(parts[2])
+		}
 	}
+	if scanner.Err() != nil {
+		return nil
+	}
+
+	result := make([]playlistEntry, 0, len(entries))
+	for _, entry := range entries {
+		result = append(result, *entry)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Index < result[j].Index
+	})
+	return result
+}
+
+func extractEpisodeID(rawURL string) string {
+	marker := "/playvideo/"
+	_, value, ok := strings.Cut(rawURL, marker)
+	if !ok {
+		return ""
+	}
+
+	if end := strings.IndexAny(value, "?/\\"); end >= 0 {
+		value = value[:end]
+	}
+	return strings.TrimSpace(value)
+}
+
+func buildEpisodeChangedEvent(windowTitle string, entries []playlistEntry) protocol.Event {
+	entry := matchPlaylistEntry(windowTitle, entries)
+	if entry == nil {
+		return protocol.Event{Type: protocol.EventEpisodeChanged, Message: windowTitle}
+	}
+
+	message := entry.Title
+	if message == "" {
+		message = windowTitle
+	}
+	index := entry.Index
+	return protocol.Event{
+		Type:      protocol.EventEpisodeChanged,
+		Message:   message,
+		Index:     &index,
+		EpisodeID: entry.EpisodeID,
+	}
+}
+
+func matchPlaylistEntry(windowTitle string, entries []playlistEntry) *playlistEntry {
+	normalizedTitle := normalizeTitle(windowTitle)
+	if normalizedTitle == "" {
+		return nil
+	}
+
+	for i := range entries {
+		entryTitle := normalizeTitle(entries[i].Title)
+		if entryTitle != "" && (strings.Contains(normalizedTitle, entryTitle) || strings.Contains(entryTitle, normalizedTitle)) {
+			return &entries[i]
+		}
+	}
+
+	for i := range entries {
+		if entries[i].EpisodeID != "" && strings.Contains(windowTitle, entries[i].EpisodeID) {
+			return &entries[i]
+		}
+		if entries[i].URL != "" && strings.Contains(windowTitle, entries[i].URL) {
+			return &entries[i]
+		}
+	}
+
+	return nil
+}
+
+func normalizeTitle(title string) string {
+	return strings.ToLower(strings.TrimSpace(title))
+}
+
+func readStdinCommands(ch chan<- Command) {
+	scanner := bufio.NewScanner(os.Stdin)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+
+		var cmd Command
+		if err := json.Unmarshal([]byte(line), &cmd); err != nil {
+			continue
+		}
+		ch <- cmd
+	}
+	_ = scanner.Err()
+}
+
+func handleCommand(hwnd uintptr, cmd Command, events *protocol.Writer) {
+	switch cmd.Action {
+	case "next":
+		SendNextTrack(hwnd)
+		events.Write(protocol.Event{Type: protocol.EventEpisodeChanged, Message: "next"})
+	case "previous":
+		SendPreviousTrack(hwnd)
+		events.Write(protocol.Event{Type: protocol.EventEpisodeChanged, Message: "previous"})
+	case "seek":
+		SendSeek(hwnd, cmd.PosMs)
+	case "loadSubtitle":
+		loadSubtitle(hwnd, cmd.Path)
+		events.Write(protocol.Event{Type: protocol.EventSubtitleLoaded})
+	case "stop":
+		events.Write(protocol.Event{Type: protocol.EventClosed})
+		os.Exit(0)
+	}
+}
+
+func loadSubtitle(_ uintptr, path string) {
+	if path == "" {
+		return
+	}
+}
+
+func readWindowTitle(hwnd uintptr) string {
+	title, err := GetWindowText(hwnd)
+	if err != nil {
+		return ""
+	}
+	return title
 }
 
 type initialSeek struct {
@@ -95,16 +288,18 @@ func (s *initialSeek) Apply(hwnd uintptr, state State) {
 }
 
 func writeStateEvent(events *protocol.Writer, state State) {
-	events.Write(protocol.Event{Type: protocol.EventProgress, PosMs: state.PosMs, DurMs: state.DurMs, Status: state.Status})
+	events.Write(protocol.Event{
+		Type:   protocol.EventProgress,
+		PosMs:  state.PosMs,
+		DurMs:  state.DurMs,
+		Status: state.Status,
+	})
 }
 
 func WaitForWindow(existing map[uintptr]bool, timeout time.Duration) (uintptr, error) {
 	startedAt := time.Now()
 	deadline := time.Now().Add(timeout)
-	fallbackDelay := 3 * time.Second
-	if timeout < fallbackDelay {
-		fallbackDelay = timeout
-	}
+	fallbackDelay := min(timeout, 3*time.Second)
 	var fallback uintptr
 
 	for time.Now().Before(deadline) {
