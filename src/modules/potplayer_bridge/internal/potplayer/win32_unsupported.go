@@ -18,3 +18,16 @@ func ReadState(_ uintptr) (State, error) {
 
 func SendSeek(_ uintptr, _ int64) {
 }
+
+func GetWindowText(_ uintptr) (string, error) {
+	return "", errors.New("potplayer bridge only supports Windows")
+}
+
+func SendCommand(_ uintptr, _ uintptr) {
+}
+
+func SendNextTrack(_ uintptr) {
+}
+
+func SendPreviousTrack(_ uintptr) {
+}

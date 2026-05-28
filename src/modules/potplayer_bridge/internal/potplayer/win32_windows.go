@@ -21,6 +21,8 @@ var (
 	procEnumWindows           = user32.NewProc("EnumWindows")
 	procIsWindowVisible       = user32.NewProc("IsWindowVisible")
 	procGetClassNameW         = user32.NewProc("GetClassNameW")
+	procGetWindowTextW        = user32.NewProc("GetWindowTextW")
+	procGetWindowTextLengthW  = user32.NewProc("GetWindowTextLengthW")
 	procSendMessageW          = user32.NewProc("SendMessageW")
 	procIsWindow              = user32.NewProc("IsWindow")
 	errEnumWindowsUnavailable = errors.New("EnumWindows unavailable")
@@ -99,4 +101,46 @@ func SendSeek(hwnd uintptr, posMs int64) {
 	}
 
 	sendMessage(hwnd, wmUser, potSetCurrent, uintptr(posMs))
+}
+
+func GetWindowText(hwnd uintptr) (string, error) {
+	if hwnd == 0 || !IsWindowHandle(hwnd) {
+		return "", errors.New("invalid window handle")
+	}
+
+	length, _, _ := procGetWindowTextLengthW.Call(hwnd)
+	if length == 0 {
+		return "", nil
+	}
+
+	buf := make([]uint16, length+1)
+	ret, _, _ := procGetWindowTextW.Call(hwnd, uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)))
+	if ret == 0 {
+		return "", errors.New("GetWindowText failed")
+	}
+
+	return syscall.UTF16ToString(buf[:ret]), nil
+}
+
+const (
+	wmCommand            = 0x0111
+	potPreviousTrack     = 10123
+	potNextTrack         = 10124
+	potNextPlaylistItem  = 10068
+)
+
+func SendCommand(hwnd uintptr, command uintptr) {
+	if hwnd == 0 || !IsWindowHandle(hwnd) {
+		return
+	}
+
+	sendMessage(hwnd, wmCommand, command, 0)
+}
+
+func SendNextTrack(hwnd uintptr) {
+	SendCommand(hwnd, potNextTrack)
+}
+
+func SendPreviousTrack(hwnd uintptr) {
+	SendCommand(hwnd, potPreviousTrack)
 }
