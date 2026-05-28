@@ -34,12 +34,12 @@ type Command struct {
 }
 
 type PlaylistItem struct {
-	Index            int     `json:"index"`
-	EpisodeID        string  `json:"episodeId"`
-	Title            string  `json:"title"`
-	URL              string  `json:"url"`
-	SubtitlePath     string  `json:"subtitlePath,omitempty"`
-	HistoryProgressSec int64 `json:"historyProgressSec,omitempty"`
-	IntroEndSec      int64   `json:"introEndSec,omitempty"`
-	OutroStartSec    int64   `json:"outroStartSec,omitempty"`
+	Index              int    `json:"index"`
+	EpisodeID          string `json:"episodeId"`
+	Title              string `json:"title"`
+	URL                string `json:"url"`
+	SubtitlePath       string `json:"subtitlePath,omitempty"`
+	HistoryProgressSec int64  `json:"historyProgressSec,omitempty"`
+	IntroEndSec        int64  `json:"introEndSec,omitempty"`
+	OutroDurationSec   int64  `json:"outroDurationSec,omitempty"`
 }

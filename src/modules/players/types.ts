@@ -18,7 +18,7 @@ export interface PlayItem {
     duration: number;
     playLink: string;
     introEndSec?: number;
-    outroStartSec?: number;
+    outroDurationSec?: number;
 }
 
 // 播放状态数据

@@ -51,6 +51,10 @@ function formatDplValue(value: string): string {
     return value.replace(/[\r\n]/g, ' ').trim();
 }
 
+function getStartSec(item: PlayItem): number {
+    return Math.max(item.ts || 0, item.introEndSec || 0);
+}
+
 export class PotPlayer extends BasePlayer {
     private bridgeProcess: ChildProcess | null = null;
     private currentItem: PlayItem | null = null;
@@ -62,7 +66,6 @@ export class PotPlayer extends BasePlayer {
     private outroTriggeredEpisodeId: string | null = null;
     private enableSkipIntro = true;
     private enableSkipOutro = true;
-    private outroBeforeEndSec = 30;
 
     constructor(config: Config) {
         super(config);
@@ -177,7 +180,8 @@ export class PotPlayer extends BasePlayer {
         }
 
         const targetItem = infos[targetIndex] || infos[0];
-        const startMs = (targetItem.ts || 0) * 1000;
+        const startSec = getStartSec(targetItem);
+        const startMs = startSec * 1000;
 
         let content = '\uFEFFDAUMPLAYLIST\n';
         content += `playname=${targetItem.playLink}\n`;
@@ -192,8 +196,8 @@ export class PotPlayer extends BasePlayer {
             if (item.duration > 0) {
                 content += `${index}*duration2*${item.duration}\n`;
             }
-            if (i === targetIndex && item.ts > 0) {
-                content += `${index}*start*${item.ts}\n`;
+            if (i === targetIndex && startSec > 0) {
+                content += `${index}*start*${startSec}\n`;
             }
         }
 
@@ -435,35 +439,52 @@ export class PotPlayer extends BasePlayer {
         }
     }
 
-    private checkOutroSkip(posMs: number, durMs: number): void {
+    private checkOutroSkip(posMs: number, durMs: number, duration: number): boolean {
         if (!this.currentItem || !this.enableSkipOutro) {
-            return;
+            return false;
         }
 
         if (!durMs || durMs <= 0) {
-            return;
+            return false;
         }
 
         const episodeId = this.currentItem.itemGuid;
         if (this.outroTriggeredEpisodeId === episodeId) {
-            return;
+            return true;
         }
 
         const currentSec = posMs / 1000;
         const durationSec = durMs / 1000;
-        let shouldSkip = false;
-
-        if (this.currentItem.outroStartSec && currentSec >= this.currentItem.outroStartSec) {
-            shouldSkip = true;
-        } else if (durationSec - currentSec <= this.outroBeforeEndSec) {
-            shouldSkip = true;
-        }
+        const outroDurationSec = this.currentItem.outroDurationSec || 0;
+        const remainingSec = durationSec - currentSec;
+        const shouldSkip = outroDurationSec > 0 && remainingSec <= outroDurationSec;
 
         if (shouldSkip) {
-            log.info(`跳过片尾: episodeId=${episodeId}, posSec=${currentSec}, durSec=${durationSec}`);
+            log.info(`跳过片尾: episodeId=${episodeId}, posSec=${currentSec}, durSec=${durationSec}, outroDurationSec=${outroDurationSec}`);
             this.outroTriggeredEpisodeId = episodeId;
+            this.markCurrentEpisodeCompleted(duration);
             this.goNextEpisode();
+            return true;
         }
+
+        return false;
+    }
+
+    private markCurrentEpisodeCompleted(duration: number): void {
+        if (!this.currentItem || duration <= 0) {
+            return;
+        }
+
+        const progressData: PlayStatusData = {
+            itemGuid: this.currentItem.itemGuid,
+            ts: duration,
+            duration,
+            percentage: 100
+        };
+
+        this.currentItem.ts = duration;
+        this.updateGlobalStatus(progressData);
+        this.emitEvent(EventType.PROGRESS, progressData);
     }
 
     private goNextEpisode(): void {
@@ -487,6 +508,10 @@ export class PotPlayer extends BasePlayer {
         const ts = currentMs > 0 ? Math.floor(currentMs / 1000) : this.getStatus().ts;
         const percentage = duration > 0 ? Math.min(100, Math.floor((ts / duration) * 100)) : 0;
 
+        if (this.checkOutroSkip(currentMs, totalMs, duration)) {
+            return;
+        }
+
         const progressData: PlayStatusData = {
             itemGuid: this.currentItem.itemGuid,
             ts,
@@ -496,8 +521,6 @@ export class PotPlayer extends BasePlayer {
 
         this.updateGlobalStatus(progressData);
         this.emitEvent(EventType.PROGRESS, progressData);
-
-        this.checkOutroSkip(currentMs, totalMs);
     }
 
     private handleExit(code: number): void {

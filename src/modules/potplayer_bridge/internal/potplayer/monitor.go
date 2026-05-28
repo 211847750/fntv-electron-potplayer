@@ -41,7 +41,7 @@ func PlayAndMonitor(req PlayRequest, events *protocol.Writer) int {
 	events.Write(protocol.Event{Type: protocol.EventReady, HWND: hwnd})
 
 	var last State
-	seek := newInitialSeek(req.SeekSeconds)
+	seek := newSeekRetry(req.SeekSeconds * 1000)
 	ticker := time.NewTicker(req.Interval)
 	defer ticker.Stop()
 
@@ -54,7 +54,7 @@ func PlayAndMonitor(req PlayRequest, events *protocol.Writer) int {
 	for {
 		select {
 		case cmd := <-cmdChan:
-			handleCommand(hwnd, cmd, events)
+			handleCommand(hwnd, cmd, events, &seek)
 		case <-ticker.C:
 			state, err := ReadState(hwnd)
 			if err != nil {
@@ -219,7 +219,7 @@ func readStdinCommands(ch chan<- Command) {
 	_ = scanner.Err()
 }
 
-func handleCommand(hwnd uintptr, cmd Command, events *protocol.Writer) {
+func handleCommand(hwnd uintptr, cmd Command, events *protocol.Writer, seek *seekRetry) {
 	switch cmd.Action {
 	case "next":
 		SendNextTrack(hwnd)
@@ -228,7 +228,7 @@ func handleCommand(hwnd uintptr, cmd Command, events *protocol.Writer) {
 		SendPreviousTrack(hwnd)
 		events.Write(protocol.Event{Type: protocol.EventEpisodeChanged, Message: "previous"})
 	case "seek":
-		SendSeek(hwnd, cmd.PosMs)
+		*seek = newSeekRetry(cmd.PosMs)
 	case "loadSubtitle":
 		loadSubtitle(hwnd, cmd.Path)
 		events.Write(protocol.Event{Type: protocol.EventSubtitleLoaded})
@@ -252,24 +252,24 @@ func readWindowTitle(hwnd uintptr) string {
 	return title
 }
 
-type initialSeek struct {
+type seekRetry struct {
 	targetMs int64
 	until    time.Time
 	done     bool
 }
 
-func newInitialSeek(seconds int64) *initialSeek {
-	if seconds <= 0 {
-		return &initialSeek{done: true}
+func newSeekRetry(targetMs int64) seekRetry {
+	if targetMs <= 0 {
+		return seekRetry{done: true}
 	}
 
-	return &initialSeek{
-		targetMs: seconds * 1000,
+	return seekRetry{
+		targetMs: targetMs,
 		until:    time.Now().Add(20 * time.Second),
 	}
 }
 
-func (s *initialSeek) Apply(hwnd uintptr, state State) {
+func (s *seekRetry) Apply(hwnd uintptr, state State) {
 	if s.done || time.Now().After(s.until) {
 		s.done = true
 		return

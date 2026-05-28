@@ -100,7 +100,7 @@ export interface PlayInfo {
     play_config: {
         /** 跳过片头的时间点（秒），null表示不跳过 */
         skip_opening: number | null;
-        /** 跳过片尾的时间点（秒），null表示不跳过 */
+        /** 跳过片尾的时长/距结尾秒数，null表示不跳过 */
         skip_ending: number | null;
     };
     /** 播放进度时间戳（秒） */

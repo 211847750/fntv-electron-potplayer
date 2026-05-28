@@ -301,7 +301,7 @@ async function handlePlayMovie(_event: IpcMainEvent, { id, token, sourceIndex }:
 
     const skipConfig = {
         introEndSec: response.data.play_config?.skip_opening ?? undefined,
-        outroStartSec: response.data.play_config?.skip_ending ?? undefined,
+        outroDurationSec: response.data.play_config?.skip_ending ?? undefined,
     };
 
     let playList: ply.PlayItem[] = [];
@@ -408,7 +408,7 @@ function getProxyUrl(cfg: fnConfig.Config, itemGuid: string, sourceIndex: number
 }
 
 // 处理当前播放的媒体信息
-function processEpisodeMedia(cfg: fnConfig.Config, info: fn.PlayListItem, skipConfig?: { introEndSec?: number; outroStartSec?: number }): ply.PlayItem {
+function processEpisodeMedia(cfg: fnConfig.Config, info: fn.PlayListItem, skipConfig?: { introEndSec?: number; outroDurationSec?: number }): ply.PlayItem {
     return {
         itemGuid: info.guid,
         title: info.title,
@@ -419,7 +419,7 @@ function processEpisodeMedia(cfg: fnConfig.Config, info: fn.PlayListItem, skipCo
         duration: info.duration,
         playLink: getProxyUrl(cfg, info.guid),
         introEndSec: skipConfig?.introEndSec,
-        outroStartSec: skipConfig?.outroStartSec,
+        outroDurationSec: skipConfig?.outroDurationSec,
     };
 }
 
@@ -435,7 +435,7 @@ function processSingleMedia(cfg: fnConfig.Config, info: fn.PlayInfo): ply.PlayIt
         duration: info.item.duration,
         playLink: getProxyUrl(cfg, info.guid),
         introEndSec: info.play_config?.skip_opening ?? undefined,
-        outroStartSec: info.play_config?.skip_ending ?? undefined,
+        outroDurationSec: info.play_config?.skip_ending ?? undefined,
     };
 }
 
