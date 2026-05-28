@@ -2,6 +2,7 @@ import { app } from 'electron';
 import { ChildProcess, spawn } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as os from 'os';
 import {
     BasePlayer,
     Config,
@@ -17,14 +18,6 @@ import log from '../../logger';
 
 const BRIDGE_PROGRESS_INTERVAL = '1s';
 
-function formatTitle(info: PlayItem): string {
-    if (info.tvTitle) {
-        return `${info.tvTitle || 'noTVTitle'} - S${info.seasonNumber || '0'}E${info.episodeNumber || '0'}: ${info.title || 'noTitle'}`;
-    }
-
-    return info.title || info.itemGuid;
-}
-
 type BridgeEvent = {
     type?: string;
     hwnd?: number;
@@ -32,6 +25,14 @@ type BridgeEvent = {
     durMs?: number;
     status?: number;
     message?: string;
+    index?: number;
+    episodeId?: string;
+};
+
+type PlaylistMapping = {
+    index: number;
+    item: PlayItem;
+    subtitlePath?: string;
 };
 
 function getBridgePath(): string {
@@ -46,11 +47,22 @@ function getBridgePath(): string {
     return path.join(appRootPath, 'third_party', 'potplayer-bridge', 'potbridge.exe');
 }
 
+function formatDplValue(value: string): string {
+    return value.replace(/[\r\n]/g, ' ').trim();
+}
+
 export class PotPlayer extends BasePlayer {
     private bridgeProcess: ChildProcess | null = null;
     private currentItem: PlayItem | null = null;
     private exitEmitted = false;
     private stdoutBuffer = '';
+    private playlistMapping: PlaylistMapping[] = [];
+    private currentIndex = 0;
+    private introSeekDone = new Set<string>();
+    private outroTriggeredEpisodeId: string | null = null;
+    private enableSkipIntro = true;
+    private enableSkipOutro = true;
+    private outroBeforeEndSec = 30;
 
     constructor(config: Config) {
         super(config);
@@ -73,28 +85,39 @@ export class PotPlayer extends BasePlayer {
             return false;
         }
 
-        const currentItem = infos[pos] || infos[0];
-        if (!currentItem) {
+        if (infos.length === 0) {
             this.emitError('播放列表为空');
             return false;
         }
 
-        this.currentItem = currentItem;
+        this.playlistMapping = infos.map((item, index) => ({
+            index,
+            item,
+        }));
+
+        this.currentIndex = pos;
+        this.currentItem = infos[pos] || infos[0];
         this.exitEmitted = false;
+
         this.updateGlobalStatus({
-            itemGuid: currentItem.itemGuid,
-            ts: currentItem.ts || 0,
-            duration: currentItem.duration || 0,
-            percentage: currentItem.duration > 0 ? Math.floor((currentItem.ts / currentItem.duration) * 100) : 0
+            itemGuid: this.currentItem.itemGuid,
+            ts: this.currentItem.ts || 0,
+            duration: this.currentItem.duration || 0,
+            percentage: this.currentItem.duration > 0 ? Math.floor((this.currentItem.ts / this.currentItem.duration) * 100) : 0
         });
 
         try {
-            const subtitlePaths = await this.loadSubtitlePaths(currentItem.itemGuid);
-            const bridgeArgs = this.createBridgeArgs(currentItem, subtitlePaths, args || []);
+            const playlistPath = await this.generatePlaylist(infos, pos);
+            const bridgeArgs = this.createBridgeArgs(playlistPath, args || []);
+
             this.bridgeProcess = spawn(bridgePath, bridgeArgs, {
                 detached: false,
-                stdio: ['ignore', 'pipe', 'pipe'],
+                stdio: ['pipe', 'pipe', 'pipe'],
                 windowsHide: true
+            });
+
+            this.bridgeProcess.stdin?.on('error', (err) => {
+                log.debug('PotPlayer Bridge stdin error:', err.message);
             });
 
             this.bridgeProcess.stdout?.on('data', data => this.handleBridgeStdout(String(data)));
@@ -128,39 +151,66 @@ export class PotPlayer extends BasePlayer {
     }
 
     stop(): void {
-        if (this.bridgeProcess) {
-            try {
-                this.bridgeProcess.kill();
-            } catch (error) {
-                const message = error instanceof Error ? error.message : String(error);
-                log.debug('停止PotPlayer Bridge失败:', message);
-            }
-        }
+        this.sendCommand({ command: 'stop' });
 
-        this.handleExit(0);
+        setTimeout(() => {
+            if (this.bridgeProcess) {
+                try {
+                    this.bridgeProcess.kill();
+                } catch (error) {
+                    const message = error instanceof Error ? error.message : String(error);
+                    log.debug('停止PotPlayer Bridge失败:', message);
+                }
+            }
+            this.handleExit(0);
+        }, 500);
     }
 
     isPlaying(): boolean {
         return this.currentItem !== null && !this.exitEmitted;
     }
 
-    private createBridgeArgs(info: PlayItem, subtitlePaths: string[], extraArgs: string[]): string[] {
+    private async generatePlaylist(infos: PlayItem[], targetIndex: number): Promise<string> {
+        const tempDir = path.join(os.tmpdir(), 'fntv-playlists');
+        if (!fs.existsSync(tempDir)) {
+            fs.mkdirSync(tempDir, { recursive: true });
+        }
+
+        const targetItem = infos[targetIndex] || infos[0];
+        const startMs = (targetItem.ts || 0) * 1000;
+
+        let content = '\uFEFFDAUMPLAYLIST\n';
+        content += `playname=${targetItem.playLink}\n`;
+        content += `playtime=${startMs}\n`;
+
+        for (let i = 0; i < infos.length; i++) {
+            const item = infos[i];
+            const index = i + 1;
+            content += `${index}*file*${item.playLink}\n`;
+            content += `${index}*title*${formatDplValue(this.formatItemTitle(item))}\n`;
+            content += `${index}*played*0\n`;
+            if (item.duration > 0) {
+                content += `${index}*duration2*${item.duration}\n`;
+            }
+            if (i === targetIndex && item.ts > 0) {
+                content += `${index}*start*${item.ts}\n`;
+            }
+        }
+
+        const playlistPath = path.join(tempDir, `playlist_${Date.now()}.dpl`);
+        await fs.promises.writeFile(playlistPath, content, 'utf-8');
+
+        log.debug(`生成DPL播放列表: ${playlistPath}`);
+        return playlistPath;
+    }
+
+    private createBridgeArgs(playlistPath: string, extraArgs: string[]): string[] {
         const bridgeArgs = [
             'play',
             '--potplayer', this.config.playerPath,
-            '--url', info.playLink,
-            '--title', formatTitle(info),
+            '--playlist', playlistPath,
             '--interval', BRIDGE_PROGRESS_INTERVAL
         ];
-
-        if (info.ts > 0) {
-            bridgeArgs.push('--seek', String(info.ts));
-        }
-
-        const firstSubtitlePath = subtitlePaths[0];
-        if (firstSubtitlePath) {
-            bridgeArgs.push('--sub', firstSubtitlePath);
-        }
 
         for (const extraArg of extraArgs) {
             bridgeArgs.push('--arg', extraArg);
@@ -169,15 +219,16 @@ export class PotPlayer extends BasePlayer {
         return bridgeArgs;
     }
 
-    private async loadSubtitlePaths(itemGuid: string): Promise<string[]> {
+    private sendCommand(command: Record<string, unknown>): void {
+        if (!this.bridgeProcess?.stdin?.writable) {
+            return;
+        }
+
         try {
-            const fnapi = this.getFnApi();
-            const subtitles = await fnapi.getSubtitle(itemGuid);
-            return await fnapi.downloadSubtitle(subtitles);
+            const data = JSON.stringify(command) + '\n';
+            this.bridgeProcess.stdin.write(data);
         } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            log.debug('PotPlayer字幕加载准备失败:', message);
-            return [];
+            log.debug('发送命令失败:', error);
         }
     }
 
@@ -213,7 +264,11 @@ export class PotPlayer extends BasePlayer {
             case 'progress':
                 this.handleProgress(event);
                 break;
+            case 'episodeChanged':
+                this.handleEpisodeChanged(event);
+                break;
             case 'exit':
+            case 'closed':
                 this.handleProgress(event);
                 this.handleExit(0);
                 break;
@@ -224,6 +279,201 @@ export class PotPlayer extends BasePlayer {
                 log.debug('未知PotPlayer Bridge事件:', event);
                 break;
         }
+    }
+
+    private handleEpisodeChanged(event: BridgeEvent): void {
+        const direction = event.message;
+        log.info(`handleEpisodeChanged: direction="${direction}"`);
+
+        if (typeof event.index === 'number' && event.index >= 0 && event.index < this.playlistMapping.length) {
+            this.switchToEpisode(event.index);
+            return;
+        }
+
+        if (event.episodeId) {
+            const mapping = this.playlistMapping.find(item => item.item.itemGuid === event.episodeId);
+            if (mapping) {
+                this.switchToEpisode(mapping.index);
+                return;
+            }
+        }
+
+        if (direction === 'next') {
+            this.switchToEpisode(Math.min(this.currentIndex + 1, this.playlistMapping.length - 1));
+        } else if (direction === 'previous') {
+            this.switchToEpisode(Math.max(this.currentIndex - 1, 0));
+        } else if (direction) {
+            log.info(`handleEpisodeChanged: 尝试标题匹配`);
+            const previousIndex = this.currentIndex;
+            if (this.tryMatchByTitle(direction)) {
+                const matchedIndex = this.currentIndex;
+                this.currentIndex = previousIndex;
+                this.switchToEpisode(matchedIndex);
+            }
+        } else {
+            log.warn(`handleEpisodeChanged: 无方向信息`);
+        }
+    }
+
+    private tryMatchByTitle(title: string): boolean {
+        if (!title || this.playlistMapping.length === 0) {
+            log.warn(`标题匹配: 无标题或播放列表为空`);
+            return false;
+        }
+
+        log.info(`标题匹配: 尝试匹配 "${title}"`);
+
+        const normalizedTitle = title.toLowerCase().trim();
+        for (const mapping of this.playlistMapping) {
+            const itemTitle = this.formatItemTitle(mapping.item).toLowerCase().trim();
+            if (itemTitle && (normalizedTitle.includes(itemTitle) || itemTitle.includes(normalizedTitle))) {
+                this.currentIndex = mapping.index;
+                log.info(`标题匹配成功: "${title}" -> index=${mapping.index}`);
+                return true;
+            }
+        }
+
+        const urlMatch = title.match(/playvideo\/([^?\\/]+)/i);
+        if (urlMatch) {
+            const itemGuid = urlMatch[1];
+            log.info(`标题匹配: 从URL提取 itemGuid="${itemGuid}"`);
+
+            for (const mapping of this.playlistMapping) {
+                if (mapping.item.itemGuid === itemGuid) {
+                    this.currentIndex = mapping.index;
+                    log.info(`标题匹配成功: itemGuid=${itemGuid} -> index=${mapping.index}`);
+                    return true;
+                }
+            }
+        }
+
+        const epMatch = title.toLowerCase().match(/s(\d+)e(\d+)/i);
+        if (epMatch) {
+            const seasonNum = parseInt(epMatch[1], 10);
+            const episodeNum = parseInt(epMatch[2], 10);
+            log.info(`标题匹配: 尝试 S${seasonNum}E${episodeNum} 模式匹配`);
+
+            for (const mapping of this.playlistMapping) {
+                const item = mapping.item;
+                if (item.seasonNumber === seasonNum && item.episodeNumber === episodeNum) {
+                    this.currentIndex = mapping.index;
+                    log.info(`SxxExx匹配成功: S${seasonNum}E${episodeNum} -> index=${mapping.index}`);
+                    return true;
+                }
+            }
+        }
+
+        log.warn(`标题匹配失败: "${title}"`);
+        return false;
+    }
+
+    private switchToEpisode(index: number): void {
+        if (index === this.currentIndex) {
+            return;
+        }
+
+        this.flushCurrentProgressBeforeSwitch();
+        this.currentIndex = index;
+        this.updateCurrentEpisode();
+    }
+
+    private flushCurrentProgressBeforeSwitch(): void {
+        const status = this.getStatus();
+        if (!this.currentItem || status.itemGuid !== this.currentItem.itemGuid || status.ts <= 0) {
+            return;
+        }
+
+        const progressData: PlayStatusData = { ...status };
+        log.info('切集前刷新当前集进度:', progressData);
+        this.currentItem.ts = progressData.ts;
+        this.emitEvent(EventType.PROGRESS, progressData);
+    }
+
+    private formatItemTitle(item: PlayItem): string {
+        if (item.tvTitle) {
+            return `${item.tvTitle} - S${item.seasonNumber || 0}E${item.episodeNumber || 0}: ${item.title}`;
+        }
+        return item.title || item.itemGuid;
+    }
+
+    private updateCurrentEpisode(): void {
+        if (this.currentIndex >= 0 && this.currentIndex < this.playlistMapping.length) {
+            this.currentItem = this.playlistMapping[this.currentIndex].item;
+            this.outroTriggeredEpisodeId = null;
+
+            log.info(`切集: index=${this.currentIndex}, episodeId=${this.currentItem.itemGuid}`);
+
+            this.updateGlobalStatus({
+                itemGuid: this.currentItem.itemGuid,
+                ts: 0,
+                duration: this.currentItem.duration || 0,
+                percentage: 0
+            });
+
+            this.applyIntroSeek();
+        }
+    }
+
+    private applyIntroSeek(): void {
+        if (!this.currentItem || !this.enableSkipIntro) {
+            return;
+        }
+
+        const episodeId = this.currentItem.itemGuid;
+        if (this.introSeekDone.has(episodeId)) {
+            return;
+        }
+
+        const historySec = this.currentItem.ts || 0;
+        const introEndSec = this.currentItem.introEndSec || 0;
+        const targetSec = Math.max(historySec, introEndSec);
+
+        if (targetSec > 0) {
+            log.info(`跳过片头: episodeId=${episodeId}, targetSec=${targetSec}`);
+            this.sendCommand({ command: 'seek', posMs: targetSec * 1000 });
+            this.introSeekDone.add(episodeId);
+        }
+    }
+
+    private checkOutroSkip(posMs: number, durMs: number): void {
+        if (!this.currentItem || !this.enableSkipOutro) {
+            return;
+        }
+
+        if (!durMs || durMs <= 0) {
+            return;
+        }
+
+        const episodeId = this.currentItem.itemGuid;
+        if (this.outroTriggeredEpisodeId === episodeId) {
+            return;
+        }
+
+        const currentSec = posMs / 1000;
+        const durationSec = durMs / 1000;
+        let shouldSkip = false;
+
+        if (this.currentItem.outroStartSec && currentSec >= this.currentItem.outroStartSec) {
+            shouldSkip = true;
+        } else if (durationSec - currentSec <= this.outroBeforeEndSec) {
+            shouldSkip = true;
+        }
+
+        if (shouldSkip) {
+            log.info(`跳过片尾: episodeId=${episodeId}, posSec=${currentSec}, durSec=${durationSec}`);
+            this.outroTriggeredEpisodeId = episodeId;
+            this.goNextEpisode();
+        }
+    }
+
+    private goNextEpisode(): void {
+        if (this.currentIndex >= this.playlistMapping.length - 1) {
+            log.info('已是最后一集，无法跳转');
+            return;
+        }
+
+        log.info(`自动下一集: ${this.currentIndex} -> ${this.currentIndex + 1}`);
+        this.sendCommand({ command: 'next' });
     }
 
     private handleProgress(event: BridgeEvent): void {
@@ -246,6 +496,8 @@ export class PotPlayer extends BasePlayer {
 
         this.updateGlobalStatus(progressData);
         this.emitEvent(EventType.PROGRESS, progressData);
+
+        this.checkOutroSkip(currentMs, totalMs);
     }
 
     private handleExit(code: number): void {

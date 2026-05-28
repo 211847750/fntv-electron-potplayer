@@ -299,6 +299,11 @@ async function handlePlayMovie(_event: IpcMainEvent, { id, token, sourceIndex }:
     const parentGuid = response.data.parent_guid;
     const itemGuid = response.data.guid;
 
+    const skipConfig = {
+        introEndSec: response.data.play_config?.skip_opening ?? undefined,
+        outroStartSec: response.data.play_config?.skip_ending ?? undefined,
+    };
+
     let playList: ply.PlayItem[] = [];
     if (type === 'Episode' && parentGuid) {
         log.info('当前为剧集，尝试获取系列下的所有剧集进行播放');
@@ -309,7 +314,7 @@ async function handlePlayMovie(_event: IpcMainEvent, { id, token, sourceIndex }:
         }
 
         for (const episode of episodeList.data) {
-            const mediaItem = processEpisodeMedia(config, episode);
+            const mediaItem = processEpisodeMedia(config, episode, skipConfig);
             playList.push(mediaItem);
             log.info('添加剧集到播放列表:', mediaItem);
         }
@@ -331,7 +336,7 @@ async function handlePlayMovie(_event: IpcMainEvent, { id, token, sourceIndex }:
         }
 
         for (const media of mediaList.data.list) {
-            const mediaItem = processEpisodeMedia(config, media);
+            const mediaItem = processEpisodeMedia(config, media, skipConfig);
             playList.push(mediaItem);
             log.info('添加剧集到播放列表:', mediaItem);
         }
@@ -403,7 +408,7 @@ function getProxyUrl(cfg: fnConfig.Config, itemGuid: string, sourceIndex: number
 }
 
 // 处理当前播放的媒体信息
-function processEpisodeMedia(cfg: fnConfig.Config, info: fn.PlayListItem): ply.PlayItem {
+function processEpisodeMedia(cfg: fnConfig.Config, info: fn.PlayListItem, skipConfig?: { introEndSec?: number; outroStartSec?: number }): ply.PlayItem {
     return {
         itemGuid: info.guid,
         title: info.title,
@@ -413,6 +418,8 @@ function processEpisodeMedia(cfg: fnConfig.Config, info: fn.PlayListItem): ply.P
         ts: info.ts,
         duration: info.duration,
         playLink: getProxyUrl(cfg, info.guid),
+        introEndSec: skipConfig?.introEndSec,
+        outroStartSec: skipConfig?.outroStartSec,
     };
 }
 
@@ -427,6 +434,8 @@ function processSingleMedia(cfg: fnConfig.Config, info: fn.PlayInfo): ply.PlayIt
         ts: info.ts,
         duration: info.item.duration,
         playLink: getProxyUrl(cfg, info.guid),
+        introEndSec: info.play_config?.skip_opening ?? undefined,
+        outroStartSec: info.play_config?.skip_ending ?? undefined,
     };
 }
 
