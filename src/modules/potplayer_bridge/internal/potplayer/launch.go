@@ -10,11 +10,17 @@ func Launch(req PlayRequest) error {
 	if strings.TrimSpace(req.PotPlayerPath) == "" {
 		return errors.New("potplayer path is empty")
 	}
-	if strings.TrimSpace(req.URL) == "" {
-		return errors.New("play url is empty")
-	}
 
 	args := []string{"/new"}
+
+	if req.PlaylistPath != "" {
+		args = append(args, req.PlaylistPath)
+	} else if strings.TrimSpace(req.URL) != "" {
+		args = append(args, formatURLWithTitle(req.URL, req.Title))
+	} else {
+		return errors.New("play url or playlist path is required")
+	}
+
 	if req.SeekSeconds > 0 {
 		args = append(args, "/seek="+formatSeek(req.SeekSeconds))
 	}
@@ -22,7 +28,6 @@ func Launch(req PlayRequest) error {
 		args = append(args, "/sub="+req.SubtitlePaths[0])
 	}
 	args = append(args, req.ExtraArgs...)
-	args = append(args, formatURLWithTitle(req.URL, req.Title))
 
 	cmd := exec.Command(req.PotPlayerPath, args...)
 	return cmd.Start()

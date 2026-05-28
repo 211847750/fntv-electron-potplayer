@@ -48,6 +48,7 @@ func runPlay(args []string) int {
 	seek := fs.Int64("seek", 0, "initial seek position in seconds")
 	interval := fs.Duration("interval", potplayer.DefaultInterval, "progress event interval")
 	startupTimeout := fs.Duration("startup-timeout", potplayer.DefaultStartupTimeout, "window bind timeout")
+	playlistPath := fs.String("playlist", "", "DPL playlist file path")
 	fs.Var(&subtitles, "sub", "subtitle path, can be repeated")
 	fs.Var(&extraArgs, "arg", "extra PotPlayer argument, can be repeated")
 
@@ -65,11 +66,12 @@ func runPlay(args []string) int {
 		ExtraArgs:      extraArgs,
 		Interval:       *interval,
 		StartupTimeout: *startupTimeout,
+		PlaylistPath:   *playlistPath,
 	}
 
 	return potplayer.PlayAndMonitor(req, events)
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: potbridge play --potplayer <path> --url <url> [--title <title>] [--seek <seconds>] [--sub <path>]")
+	fmt.Fprintln(os.Stderr, "usage: potbridge play --potplayer <path> [--url <url> | --playlist <path>] [--title <title>] [--seek <seconds>] [--sub <path>]")
 }
