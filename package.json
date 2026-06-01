@@ -1,6 +1,6 @@
 {
     "name": "fntv-electron-potplayer",
-"version": "0.2.0",
+    "version": "0.3.0",
     "description": "A fntv Electron fork with PotPlayer bridge support",
     "main": "dest/main/main.js",
     "scripts": {

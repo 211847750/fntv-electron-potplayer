@@ -66,6 +66,7 @@ export class PotPlayer extends BasePlayer {
     private outroTriggeredEpisodeId: string | null = null;
     private enableSkipIntro = true;
     private enableSkipOutro = true;
+    private loadedSubtitles = new Map<string, string>();  // itemGuid -> subtitlePath
 
     constructor(config: Config) {
         super(config);
@@ -92,7 +93,6 @@ export class PotPlayer extends BasePlayer {
             this.emitError('播放列表为空');
             return false;
         }
-
         this.playlistMapping = infos.map((item, index) => ({
             index,
             item,
@@ -101,6 +101,10 @@ export class PotPlayer extends BasePlayer {
         this.currentIndex = pos;
         this.currentItem = infos[pos] || infos[0];
         this.exitEmitted = false;
+        this.loadedSubtitles.clear();
+
+        // 预下载当前剧集字幕
+        this.downloadSubtitleForEpisode(this.currentItem);
 
         this.updateGlobalStatus({
             itemGuid: this.currentItem.itemGuid,
@@ -199,6 +203,10 @@ export class PotPlayer extends BasePlayer {
             if (i === targetIndex && startSec > 0) {
                 content += `${index}*start*${startSec}\n`;
             }
+            const mapping = this.playlistMapping[i];
+            if (mapping?.subtitlePath) {
+                content += `${index}*subtitle*${mapping.subtitlePath}\n`;
+            }
         }
 
         const playlistPath = path.join(tempDir, `playlist_${Date.now()}.dpl`);
@@ -264,6 +272,7 @@ export class PotPlayer extends BasePlayer {
         switch (event.type) {
             case 'ready':
                 log.info('PotPlayer窗口已绑定:', event.hwnd);
+                this.loadSubtitleForEpisode(this.currentItem);
                 break;
             case 'progress':
                 this.handleProgress(event);
@@ -415,6 +424,7 @@ export class PotPlayer extends BasePlayer {
             });
 
             this.applyIntroSeek();
+            this.loadSubtitleForEpisode(this.currentItem);
         }
     }
 
@@ -438,6 +448,50 @@ export class PotPlayer extends BasePlayer {
             this.introSeekDone.add(episodeId);
         }
     }
+
+    private async downloadSubtitleForEpisode(item: PlayItem | null): Promise<void> {
+        if (!item || this.loadedSubtitles.has(item.itemGuid)) {
+            return;
+        }
+        try {
+            const fnapi = this.getFnApi();
+            const subs = await fnapi.getSubtitle(item.itemGuid);
+            if (subs.length === 0) {
+                return;
+            }
+            const paths = await fnapi.downloadSubtitle(subs);
+            if (paths.length > 0) {
+                const idx = this.playlistMapping.findIndex(m => m.item.itemGuid === item.itemGuid);
+                if (idx >= 0) {
+                    this.playlistMapping[idx].subtitlePath = paths[0];
+                }
+                this.loadedSubtitles.set(item.itemGuid, paths[0]);
+                log.info(`字幕已下载: ${item.itemGuid} -> ${paths[0]}`);
+            }
+        } catch (error) {
+            log.debug('下载字幕失败:', error);
+        }
+    }
+
+    private loadSubtitleForEpisode(item: PlayItem | null): void {
+        if (!item) {
+            return;
+        }
+        const subPath = this.loadedSubtitles.get(item.itemGuid);
+        if (subPath) {
+            this.sendCommand({ command: 'loadSubtitle', path: subPath });
+            log.info(`发送字幕到Bridge: ${subPath}`);
+        } else {
+            // 字幕可能还在下载，等待完成后发送
+            this.downloadSubtitleForEpisode(item).then(() => {
+                const p = this.loadedSubtitles.get(item.itemGuid);
+                if (p) {
+                    this.sendCommand({ command: 'loadSubtitle', path: p });
+                }
+            });
+        }
+    }
+
 
     private checkOutroSkip(posMs: number, durMs: number, duration: number): boolean {
         if (!this.currentItem || !this.enableSkipOutro) {

@@ -31,3 +31,6 @@ func SendNextTrack(_ uintptr) {
 
 func SendPreviousTrack(_ uintptr) {
 }
+
+func loadSubtitle(_ uintptr, _ string) {
+}

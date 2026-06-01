@@ -223,10 +223,8 @@ func handleCommand(hwnd uintptr, cmd Command, events *protocol.Writer, seek *see
 	switch cmd.Action {
 	case "next":
 		SendNextTrack(hwnd)
-		events.Write(protocol.Event{Type: protocol.EventEpisodeChanged, Message: "next"})
 	case "previous":
 		SendPreviousTrack(hwnd)
-		events.Write(protocol.Event{Type: protocol.EventEpisodeChanged, Message: "previous"})
 	case "seek":
 		*seek = newSeekRetry(cmd.PosMs)
 	case "loadSubtitle":
@@ -238,12 +236,6 @@ func handleCommand(hwnd uintptr, cmd Command, events *protocol.Writer, seek *see
 	}
 }
 
-func loadSubtitle(_ uintptr, path string) {
-	if path == "" {
-		return
-	}
-}
-
 func readWindowTitle(hwnd uintptr) string {
 	title, err := GetWindowText(hwnd)
 	if err != nil {
@@ -252,10 +244,18 @@ func readWindowTitle(hwnd uintptr) string {
 	return title
 }
 
+const (
+	seekRetryToleranceBefore = 10 * time.Second
+	seekRetryMinInterval     = 1500 * time.Millisecond
+	seekRetryMaxAttempts     = 3
+)
+
 type seekRetry struct {
-	targetMs int64
-	until    time.Time
-	done     bool
+	targetMs    int64
+	until       time.Time
+	done        bool
+	attempts    int
+	lastAttempt time.Time
 }
 
 func newSeekRetry(targetMs int64) seekRetry {
@@ -275,7 +275,11 @@ func (s *seekRetry) Apply(hwnd uintptr, state State) {
 		return
 	}
 
-	if state.PosMs >= s.targetMs-3000 && state.PosMs <= s.targetMs+3000 {
+	// PotPlayer may settle on an earlier keyframe, and playback can move past
+	// the exact target before the next poll. Treat "near enough or already
+	// past target" as success; otherwise retrying pins playback at the intro
+	// boundary.
+	if state.PosMs >= s.targetMs-int64(seekRetryToleranceBefore/time.Millisecond) {
 		s.done = true
 		return
 	}
@@ -284,7 +288,19 @@ func (s *seekRetry) Apply(hwnd uintptr, state State) {
 		return
 	}
 
+	if s.attempts >= seekRetryMaxAttempts {
+		s.done = true
+		return
+	}
+
+	now := time.Now()
+	if s.attempts > 0 && now.Sub(s.lastAttempt) < seekRetryMinInterval {
+		return
+	}
+
 	SendSeek(hwnd, s.targetMs)
+	s.attempts++
+	s.lastAttempt = now
 }
 
 func writeStateEvent(events *protocol.Writer, state State) {
