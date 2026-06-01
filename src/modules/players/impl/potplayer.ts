@@ -67,6 +67,7 @@ export class PotPlayer extends BasePlayer {
     private enableSkipIntro = true;
     private enableSkipOutro = true;
     private loadedSubtitles = new Map<string, string>();  // itemGuid -> subtitlePath
+    private episodeProgress = new Map<string, PlayStatusData>();  // itemGuid -> latest progress
 
     constructor(config: Config) {
         super(config);
@@ -102,16 +103,12 @@ export class PotPlayer extends BasePlayer {
         this.currentItem = infos[pos] || infos[0];
         this.exitEmitted = false;
         this.loadedSubtitles.clear();
+        this.episodeProgress.clear();
 
         // 预下载当前剧集字幕
         this.downloadSubtitleForEpisode(this.currentItem);
 
-        this.updateGlobalStatus({
-            itemGuid: this.currentItem.itemGuid,
-            ts: this.currentItem.ts || 0,
-            duration: this.currentItem.duration || 0,
-            percentage: this.currentItem.duration > 0 ? Math.floor((this.currentItem.ts / this.currentItem.duration) * 100) : 0
-        });
+        this.updateGlobalStatus(this.statusFromItem(this.currentItem));
 
         try {
             const playlistPath = await this.generatePlaylist(infos, pos);
@@ -295,68 +292,69 @@ export class PotPlayer extends BasePlayer {
     }
 
     private handleEpisodeChanged(event: BridgeEvent): void {
-        const direction = event.message;
-        log.info(`handleEpisodeChanged: direction="${direction}"`);
-
-        if (typeof event.index === 'number' && event.index >= 0 && event.index < this.playlistMapping.length) {
-            this.switchToEpisode(event.index);
+        const targetIndex = this.resolveEpisodeIndex(event);
+        if (targetIndex === null) {
+            log.warn('handleEpisodeChanged: 无法解析目标剧集', event);
             return;
         }
 
+        this.switchToEpisode(targetIndex);
+    }
+
+    private resolveEpisodeIndex(event: BridgeEvent): number | null {
+        if (this.playlistMapping.length === 0) {
+            return null;
+        }
+
+        if (typeof event.index === 'number' && event.index >= 0 && event.index < this.playlistMapping.length) {
+            return event.index;
+        }
+
         if (event.episodeId) {
-            const mapping = this.playlistMapping.find(item => item.item.itemGuid === event.episodeId);
-            if (mapping) {
-                this.switchToEpisode(mapping.index);
-                return;
+            const index = this.findEpisodeIndex(event.episodeId);
+            if (index !== null) {
+                return index;
             }
         }
 
-        if (direction === 'next') {
-            this.switchToEpisode(Math.min(this.currentIndex + 1, this.playlistMapping.length - 1));
-        } else if (direction === 'previous') {
-            this.switchToEpisode(Math.max(this.currentIndex - 1, 0));
-        } else if (direction) {
-            log.info(`handleEpisodeChanged: 尝试标题匹配`);
-            const previousIndex = this.currentIndex;
-            if (this.tryMatchByTitle(direction)) {
-                const matchedIndex = this.currentIndex;
-                this.currentIndex = previousIndex;
-                this.switchToEpisode(matchedIndex);
-            }
-        } else {
-            log.warn(`handleEpisodeChanged: 无方向信息`);
+        switch (event.message) {
+            case 'next':
+                return Math.min(this.currentIndex + 1, this.playlistMapping.length - 1);
+            case 'previous':
+                return Math.max(this.currentIndex - 1, 0);
+            case '':
+            case undefined:
+                return null;
+            default:
+                return this.matchEpisodeIndexByTitle(event.message);
         }
     }
 
-    private tryMatchByTitle(title: string): boolean {
-        if (!title || this.playlistMapping.length === 0) {
-            log.warn(`标题匹配: 无标题或播放列表为空`);
-            return false;
-        }
+    private findEpisodeIndex(itemGuid: string): number | null {
+        const mapping = this.playlistMapping.find(item => item.item.itemGuid === itemGuid);
+        return mapping ? mapping.index : null;
+    }
 
-        log.info(`标题匹配: 尝试匹配 "${title}"`);
+    private matchEpisodeIndexByTitle(title: string): number | null {
+        if (!title || this.playlistMapping.length === 0) {
+            return null;
+        }
 
         const normalizedTitle = title.toLowerCase().trim();
         for (const mapping of this.playlistMapping) {
             const itemTitle = this.formatItemTitle(mapping.item).toLowerCase().trim();
             if (itemTitle && (normalizedTitle.includes(itemTitle) || itemTitle.includes(normalizedTitle))) {
-                this.currentIndex = mapping.index;
-                log.info(`标题匹配成功: "${title}" -> index=${mapping.index}`);
-                return true;
+                log.debug(`标题匹配成功: "${title}" -> index=${mapping.index}`);
+                return mapping.index;
             }
         }
 
         const urlMatch = title.match(/playvideo\/([^?\\/]+)/i);
         if (urlMatch) {
-            const itemGuid = urlMatch[1];
-            log.info(`标题匹配: 从URL提取 itemGuid="${itemGuid}"`);
-
-            for (const mapping of this.playlistMapping) {
-                if (mapping.item.itemGuid === itemGuid) {
-                    this.currentIndex = mapping.index;
-                    log.info(`标题匹配成功: itemGuid=${itemGuid} -> index=${mapping.index}`);
-                    return true;
-                }
+            const index = this.findEpisodeIndex(urlMatch[1]);
+            if (index !== null) {
+                log.debug(`标题URL匹配成功: itemGuid=${urlMatch[1]} -> index=${index}`);
+                return index;
             }
         }
 
@@ -364,20 +362,16 @@ export class PotPlayer extends BasePlayer {
         if (epMatch) {
             const seasonNum = parseInt(epMatch[1], 10);
             const episodeNum = parseInt(epMatch[2], 10);
-            log.info(`标题匹配: 尝试 S${seasonNum}E${episodeNum} 模式匹配`);
-
             for (const mapping of this.playlistMapping) {
                 const item = mapping.item;
                 if (item.seasonNumber === seasonNum && item.episodeNumber === episodeNum) {
-                    this.currentIndex = mapping.index;
-                    log.info(`SxxExx匹配成功: S${seasonNum}E${episodeNum} -> index=${mapping.index}`);
-                    return true;
+                    log.debug(`SxxExx匹配成功: S${seasonNum}E${episodeNum} -> index=${mapping.index}`);
+                    return mapping.index;
                 }
             }
         }
 
-        log.warn(`标题匹配失败: "${title}"`);
-        return false;
+        return null;
     }
 
     private switchToEpisode(index: number): void {
@@ -397,8 +391,7 @@ export class PotPlayer extends BasePlayer {
         }
 
         const progressData: PlayStatusData = { ...status };
-        log.info('切集前刷新当前集进度:', progressData);
-        this.currentItem.ts = progressData.ts;
+        this.recordEpisodeProgress(progressData);
         this.emitEvent(EventType.PROGRESS, progressData);
     }
 
@@ -409,6 +402,27 @@ export class PotPlayer extends BasePlayer {
         return item.title || item.itemGuid;
     }
 
+    private statusFromItem(item: PlayItem): PlayStatusData {
+        const progress = this.episodeProgress.get(item.itemGuid);
+        if (progress) {
+            return { ...progress };
+        }
+
+        const ts = item.ts || 0;
+        const duration = item.duration || 0;
+        return {
+            itemGuid: item.itemGuid,
+            ts,
+            duration,
+            percentage: duration > 0 ? Math.floor((ts / duration) * 100) : 0
+        };
+    }
+
+    private recordEpisodeProgress(status: PlayStatusData): void {
+        this.episodeProgress.set(status.itemGuid, { ...status });
+        this.updateGlobalStatus(status);
+    }
+
     private updateCurrentEpisode(): void {
         if (this.currentIndex >= 0 && this.currentIndex < this.playlistMapping.length) {
             this.currentItem = this.playlistMapping[this.currentIndex].item;
@@ -416,12 +430,7 @@ export class PotPlayer extends BasePlayer {
 
             log.info(`切集: index=${this.currentIndex}, episodeId=${this.currentItem.itemGuid}`);
 
-            this.updateGlobalStatus({
-                itemGuid: this.currentItem.itemGuid,
-                ts: 0,
-                duration: this.currentItem.duration || 0,
-                percentage: 0
-            });
+            this.updateGlobalStatus(this.statusFromItem(this.currentItem));
 
             this.applyIntroSeek();
             this.loadSubtitleForEpisode(this.currentItem);
@@ -438,7 +447,7 @@ export class PotPlayer extends BasePlayer {
             return;
         }
 
-        const historySec = this.currentItem.ts || 0;
+        const historySec = this.statusFromItem(this.currentItem).ts;
         const introEndSec = this.currentItem.introEndSec || 0;
         const targetSec = Math.max(historySec, introEndSec);
 
@@ -536,8 +545,7 @@ export class PotPlayer extends BasePlayer {
             percentage: 100
         };
 
-        this.currentItem.ts = duration;
-        this.updateGlobalStatus(progressData);
+        this.recordEpisodeProgress(progressData);
         this.emitEvent(EventType.PROGRESS, progressData);
     }
 
@@ -573,7 +581,7 @@ export class PotPlayer extends BasePlayer {
             percentage
         };
 
-        this.updateGlobalStatus(progressData);
+        this.recordEpisodeProgress(progressData);
         this.emitEvent(EventType.PROGRESS, progressData);
     }
 

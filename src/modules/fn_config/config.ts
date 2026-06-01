@@ -25,7 +25,6 @@ export interface Config {
     macCloseAction?: 'minimize' | 'quit' | 'ask';
     trayNotificationShown?: boolean;
     nasProxyEnabled?: boolean;
-    playerType?: 'mpv' | 'potplayer';
     mpvPlayerPath?: string;
     potPlayerPath?: string;
     exitMode?: 'direct' | 'minimize' | 'ask';
@@ -276,17 +275,6 @@ export function setMpvPlayerPath(path: string | null): void {
     fs.writeFileSync(getConfigPath(), JSON.stringify(config, null, 2));
 }
 
-// 获取当前外置播放器类型（PotPlayer fork，固定返回 potplayer）
-export function getPlayerType(): 'mpv' | 'potplayer' {
-    return 'potplayer';
-}
-
-// 设置当前外置播放器类型
-export function setPlayerType(playerType: 'mpv' | 'potplayer'): void {
-    const config: Config = readConfig() || {};
-    config.playerType = playerType;
-    fs.writeFileSync(getConfigPath(), JSON.stringify(config, null, 2));
-}
 
 // 获取PotPlayer播放器路径配置
 export function getPotPlayerPath(): string | undefined {
@@ -349,8 +337,6 @@ module.exports = {
     setMacCloseAction,
     getTrayNotificationShown,
     setTrayNotificationShown,
-    getPlayerType,
-    setPlayerType,
     getMpvPlayerPath,
     setMpvPlayerPath,
     getPotPlayerPath,

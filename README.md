@@ -10,7 +10,7 @@
 - Fork 仓库：[myczh-1/fntv-electron-potplayer](https://github.com/myczh-1/fntv-electron-potplayer)
 - 当前重点：Windows PotPlayer 播放、进度读取、进度回传、记录位置恢复
 - 发布包名：`FNMedia-PotPlayer_${version}_${os}_${arch}.${ext}`
-- 当前版本：`0.1.0`
+- 当前版本：`0.3.0`
 - License：[GPL-3.0](LICENSE)
 
 这个 fork 主要用于 PotPlayer 支持实验与自用增强，欢迎反馈，但不承诺长期维护或持续跟进上游版本。

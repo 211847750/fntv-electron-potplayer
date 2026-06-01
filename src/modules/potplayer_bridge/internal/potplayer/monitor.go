@@ -54,7 +54,9 @@ func PlayAndMonitor(req PlayRequest, events *protocol.Writer) int {
 	for {
 		select {
 		case cmd := <-cmdChan:
-			handleCommand(hwnd, cmd, events, &seek)
+			if handleCommand(hwnd, cmd, events, &seek) {
+				return 0
+			}
 		case <-ticker.C:
 			state, err := ReadState(hwnd)
 			if err != nil {
@@ -219,7 +221,7 @@ func readStdinCommands(ch chan<- Command) {
 	_ = scanner.Err()
 }
 
-func handleCommand(hwnd uintptr, cmd Command, events *protocol.Writer, seek *seekRetry) {
+func handleCommand(hwnd uintptr, cmd Command, events *protocol.Writer, seek *seekRetry) bool {
 	switch cmd.Action {
 	case "next":
 		SendNextTrack(hwnd)
@@ -232,8 +234,9 @@ func handleCommand(hwnd uintptr, cmd Command, events *protocol.Writer, seek *see
 		events.Write(protocol.Event{Type: protocol.EventSubtitleLoaded})
 	case "stop":
 		events.Write(protocol.Event{Type: protocol.EventClosed})
-		os.Exit(0)
+		return true
 	}
+	return false
 }
 
 func readWindowTitle(hwnd uintptr) string {

@@ -171,9 +171,12 @@ func loadSubtitle(hwnd uintptr, subPath string) {
 		return
 	}
 
-	utf16Path, _ := syscall.UTF16FromString(absPath)
-	pathBytes := len(utf16Path) * 2
-	totalSize := unsafe.Sizeof(dropfiles{}) + uintptr(pathBytes)
+	utf16Path, err := syscall.UTF16FromString(absPath)
+	if err != nil {
+		return
+	}
+	pathBytes := uintptr(len(utf16Path)) * unsafe.Sizeof(utf16Path[0])
+	totalSize := unsafe.Sizeof(dropfiles{}) + pathBytes
 
 	hMem, _, _ := procGlobalAlloc.Call(0x0042, totalSize)
 	if hMem == 0 {
@@ -190,8 +193,8 @@ func loadSubtitle(hwnd uintptr, subPath string) {
 	df.pFiles = uint32(unsafe.Sizeof(dropfiles{}))
 	df.fWide = 1
 
-	dst := (*[1 << 20]uint16)(unsafe.Pointer(p + unsafe.Sizeof(dropfiles{})))
-	copy(dst[:len(utf16Path)], utf16Path)
+	dst := unsafe.Slice((*uint16)(unsafe.Pointer(p+unsafe.Sizeof(dropfiles{}))), len(utf16Path))
+	copy(dst, utf16Path)
 
 	procGlobalUnlock.Call(hMem)
 	sendMessage(hwnd, wmDropFiles, hMem, 0)

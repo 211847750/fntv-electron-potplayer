@@ -140,13 +140,6 @@ function getPotPlayerPath(): string | undefined {
     return undefined;
 }
 
-function getCurrentPlayerType(): ply.PlayerType {
-    return fnConfig.getPlayerType() === 'potplayer' ? ply.PlayerType.POTPLAYER : ply.PlayerType.MPV;
-}
-
-function getPlayerPath(playerType: ply.PlayerType): string | undefined {
-    return playerType === ply.PlayerType.POTPLAYER ? getPotPlayerPath() : getMpvPlayerPath();
-}
 
 // 刷新窗口
 async function refreshWindow(): Promise<void> {
@@ -363,18 +356,13 @@ async function handlePlayMovie(_event: IpcMainEvent, { id, token, sourceIndex }:
         playList[playableIndex].playLink = getProxyUrl(config, playList[playableIndex].itemGuid, sourceIndex);
     }
 
-    const playerType = getCurrentPlayerType();
-    const playerPath = getPlayerPath(playerType);
+    const playerPath = getPotPlayerPath();
     if (!playerPath) {
         log.error('无法找到播放器路径');
         return;
     }
 
-    const extraArgs = playerType === ply.PlayerType.MPV ? [
-        '--force-window=immediate',
-        '--network-timeout=180',
-        // "--user-agent=Lavf/59.27.100",
-    ] : [];
+    const extraArgs: string[] = [];
 
     let playConfig: ply.Config = {
         fnapi: fnapi,
@@ -388,7 +376,7 @@ async function handlePlayMovie(_event: IpcMainEvent, { id, token, sourceIndex }:
     };
 
     // 创建播放器实例
-    const player = ply.PlayerFactory.createPlayer(playerType, playConfig);
+    const player = ply.PlayerFactory.createPlayer(ply.PlayerType.POTPLAYER, playConfig);
 
     // 保存全局引用
     currentPlayer = player;

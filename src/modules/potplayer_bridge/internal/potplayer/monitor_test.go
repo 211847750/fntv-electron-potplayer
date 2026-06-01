@@ -1,8 +1,12 @@
 package potplayer
 
 import (
+	"bytes"
 	"os"
+	"strings"
 	"testing"
+
+	"fn-potplayer-bridge/internal/protocol"
 )
 
 func TestBuildEpisodeChangedEventFromDPLTitle(t *testing.T) {
@@ -50,5 +54,35 @@ func TestBuildEpisodeChangedEventKeepsZeroIndex(t *testing.T) {
 	event := buildEpisodeChangedEvent("测试剧 - S1E1: 第一集 - PotPlayer", entries)
 	if event.Index == nil || *event.Index != 0 {
 		t.Fatalf("expected index 0, got %#v", event.Index)
+	}
+}
+
+func TestHandleStopCommandWritesClosedAndRequestsExit(t *testing.T) {
+	var buf bytes.Buffer
+	events := protocol.NewWriter(&buf)
+	seek := newSeekRetry(0)
+
+	if !handleCommand(0, Command{Action: "stop"}, events, &seek) {
+		t.Fatal("expected stop command to request monitor exit")
+	}
+
+	if got := strings.TrimSpace(buf.String()); got != `{"type":"closed"}` {
+		t.Fatalf("expected closed event, got %q", got)
+	}
+}
+
+func TestHandleSeekCommandKeepsMonitorRunning(t *testing.T) {
+	var buf bytes.Buffer
+	events := protocol.NewWriter(&buf)
+	seek := newSeekRetry(0)
+
+	if handleCommand(0, Command{Action: "seek", PosMs: 42_000}, events, &seek) {
+		t.Fatal("seek command must not request monitor exit")
+	}
+	if seek.targetMs != 42_000 {
+		t.Fatalf("expected targetMs 42000, got %d", seek.targetMs)
+	}
+	if buf.Len() != 0 {
+		t.Fatalf("expected no event for seek command, got %q", buf.String())
 	}
 }
