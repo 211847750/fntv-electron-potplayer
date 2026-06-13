@@ -159,21 +159,35 @@ function tryGetItemGuidFromOriginalLogic(button: HTMLElement): Promise<string | 
     });
 }
 
+function extractGuidFromUrl(url: string): string | null {
+    const guidMatch = url.match(/\/v\/(?:movie|tv\/episode|other)\/([a-f0-9]{32})/i);
+    return guidMatch?.[1] ?? null;
+}
+
 // 从DOM获取id
 function getItemGuidFromDOM(button: HTMLElement): string | null {
     try {
-        // 从播放按钮向上查找包含 data-id="details" 的容器
+        // 新版首页/继续播放卡片把播放遮罩包在详情链接里：
+        // <a href="/v/movie/<guid>"><div class="play-mask__btn--play"></div></a>
+        const closestLink = button.closest('a[href*="/v/movie/"], a[href*="/v/tv/episode/"], a[href*="/v/other/"]') as HTMLAnchorElement | null;
+        if (closestLink) {
+            const guid = extractGuidFromUrl(closestLink.href);
+            if (guid) {
+                logger.info('Found guid from closest link:', guid);
+                return guid;
+            }
+        }
+
+        // 旧版结构：从播放按钮向上查找包含 data-id="details" 的容器
         let container: Element | null = button;
         while (container && container !== document.body) {
             if (container.getAttribute('data-id') === 'details') {
-                // 在details容器中查找包含 /v/tv/episode/ 的A标签
-                const aLinks = container.querySelectorAll('a[href*="/v/tv/episode/"]');
-                if (aLinks.length > 0) {
-                    const link = aLinks[0] as HTMLAnchorElement;
-                    const guidMatch = link.href.match(/\/v\/tv\/episode\/([a-f0-9]{32})/i);
-                    if (guidMatch && guidMatch[1]) {
-                        logger.info('Found guid:', guidMatch[1]);
-                        return guidMatch[1];
+                const link = container.querySelector('a[href*="/v/movie/"], a[href*="/v/tv/episode/"], a[href*="/v/other/"]') as HTMLAnchorElement | null;
+                if (link) {
+                    const guid = extractGuidFromUrl(link.href);
+                    if (guid) {
+                        logger.info('Found guid from details container:', guid);
+                        return guid;
                     }
                 }
                 break;
@@ -181,12 +195,10 @@ function getItemGuidFromDOM(button: HTMLElement): string | null {
             container = container.parentElement;
         }
 
-        // 如果找不到，从当前URL获取
-        const url = window.location.href;
-        const urlMatch = url.match(/\/v\/tv\/episode\/([a-f0-9]{32})/i);
-        if (urlMatch && urlMatch[1]) {
-            logger.info('Found guid from URL:', urlMatch[1]);
-            return urlMatch[1];
+        const guidFromUrl = extractGuidFromUrl(window.location.href);
+        if (guidFromUrl) {
+            logger.info('Found guid from URL:', guidFromUrl);
+            return guidFromUrl;
         }
 
         return null;
