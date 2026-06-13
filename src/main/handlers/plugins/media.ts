@@ -21,6 +21,7 @@ interface PlayRequest {
     id: string;
     token: string;
     sourceIndex: number; // 可选，播放源
+    routeType?: 'item' | 'season';
 }
 
 // 全局播放器实例引用
@@ -263,15 +264,81 @@ function eventHandler(fnapi: fn.ApiService) {
     };
 }
 
+function isGuid(value: string | undefined): value is string {
+    return !!value && /^[a-f0-9]{32}$/i.test(value);
+}
+
+function chooseSeasonEpisode(episodes: fn.PlayListItem[]): fn.PlayListItem | null {
+    if (episodes.length === 0) {
+        return null;
+    }
+
+    return episodes.find(episode => episode.ts > 0 && (episode.duration <= 0 || episode.ts < episode.duration * 0.95))
+        ?? episodes.find(episode => episode.watched !== 1)
+        ?? episodes[0];
+}
+
+async function getPlayInfo(fnapi: fn.ApiService, itemGuid: string): Promise<fn.PlayInfo | null> {
+    try {
+        const response = await fnapi.getPlayInfo(itemGuid);
+        if (!response.success || !response.data) {
+            log.error('获取播放信息失败:', response ? response.message : '未知错误');
+            return null;
+        }
+
+        return response.data;
+    } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        log.error('获取播放信息异常:', message);
+        return null;
+    }
+}
+
+async function resolveSeasonPlayInfo(fnapi: fn.ApiService, seasonGuid: string): Promise<fn.PlayInfo | null> {
+    const seasonInfo = await getPlayInfo(fnapi, seasonGuid);
+    const playItemGuid = seasonInfo?.item?.play_item_guid;
+    if (isGuid(playItemGuid) && playItemGuid !== seasonGuid) {
+        log.info('季页面解析到实际播放项:', seasonGuid, '=>', playItemGuid);
+        const playInfo = await getPlayInfo(fnapi, playItemGuid);
+        if (playInfo) {
+            return playInfo;
+        }
+    }
+
+    const episodeList = await fnapi.getEpisodeList(seasonGuid);
+    if (!episodeList.success || !episodeList.data) {
+        log.error('获取季剧集列表失败:', episodeList ? episodeList.message : '未知错误');
+        return null;
+    }
+
+    const episode = chooseSeasonEpisode(episodeList.data);
+    if (!episode) {
+        log.warn('季剧集列表为空:', seasonGuid);
+        return null;
+    }
+
+    log.info('季页面使用剧集列表解析播放项:', seasonGuid, '=>', episode.guid);
+    return getPlayInfo(fnapi, episode.guid);
+}
+
+async function resolvePlayInfo(fnapi: fn.ApiService, request: PlayRequest): Promise<fn.PlayInfo | null> {
+    if (request.routeType === 'season') {
+        return resolveSeasonPlayInfo(fnapi, request.id);
+    }
+
+    return getPlayInfo(fnapi, request.id);
+}
+
 // 处理播放事件
-async function handlePlayMovie(_event: IpcMainEvent, { id, token, sourceIndex }: PlayRequest): Promise<void> {
+async function handlePlayMovie(_event: IpcMainEvent, request: PlayRequest): Promise<void> {
+    const { id, token, sourceIndex } = request;
     // 检查是否已有播放器在播放
     if (currentPlayer && currentPlayer.isPlaying()) {
         log.warn('已有播放器在播放，无法重复播放');
         return;
     }
 
-    log.info('Play movie event received id:', id, ' with token:', token, ' index:', sourceIndex);
+    log.info('Play movie event received id:', id, 'routeType:', request.routeType ?? 'item', 'with token:', token, 'index:', sourceIndex);
 
     const config = fnConfig.readConfig();
     if (!config || !config.domain) {
@@ -280,21 +347,20 @@ async function handlePlayMovie(_event: IpcMainEvent, { id, token, sourceIndex }:
 
     const fnapi = new fn.ApiService(config.domain, token);
 
-    const response = await fnapi.getPlayInfo(id);
-    if (!response.success || !response.data) {
-        log.error('获取播放信息失败:', response ? response.message : '未知错误');
+    const playInfo = await resolvePlayInfo(fnapi, request);
+    if (!playInfo) {
         return;
     }
 
-    log.info('获取播放信息成功:', response.data);
+    log.info('获取播放信息成功:', playInfo);
 
-    const type = response.data.type;
-    const parentGuid = response.data.parent_guid;
-    const itemGuid = response.data.guid;
+    const type = playInfo.type;
+    const parentGuid = playInfo.parent_guid;
+    const itemGuid = playInfo.guid;
 
     const skipConfig = {
-        introEndSec: response.data.play_config?.skip_opening ?? undefined,
-        outroDurationSec: response.data.play_config?.skip_ending ?? undefined,
+        introEndSec: playInfo.play_config?.skip_opening ?? undefined,
+        outroDurationSec: playInfo.play_config?.skip_ending ?? undefined,
     };
 
     let playList: ply.PlayItem[] = [];
@@ -335,7 +401,7 @@ async function handlePlayMovie(_event: IpcMainEvent, { id, token, sourceIndex }:
         }
     }
     else {
-        const mediaItem = processSingleMedia(config, response.data);
+        const mediaItem = processSingleMedia(config, playInfo);
         playList.push(mediaItem);
         log.info('添加单集到播放列表:', mediaItem);
     }

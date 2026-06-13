@@ -28,13 +28,32 @@ async function getPlayButtonConfig(): Promise<{ hideOriginalPlayButton: boolean 
     });
 }
 
+type PlayRouteType = 'item' | 'season';
+
+interface PlayRoute {
+    id: string;
+    routeType: PlayRouteType;
+}
+
+function getPlayRouteFromUrl(url: string): PlayRoute | null {
+    const match = url.match(/\/v\/(movie|other|tv\/episode|tv\/season)\/([a-f0-9]{32})(?:[/?#]|$)/i);
+    if (!match) {
+        return null;
+    }
+
+    return {
+        id: match[2],
+        routeType: match[1].toLowerCase() === 'tv/season' ? 'season' : 'item',
+    };
+}
+
+
 // 发送播放信息到主进程
 function sendPlayEventToMain(button: HTMLElement | null = null): string | null {
-    const url = window.location.href;
-    const id = url.split('/').pop();
+    const route = getPlayRouteFromUrl(window.location.href);
 
-    if (!id) {
-        logger.error('Failed to extract ID from DOM or URL');
+    if (!route) {
+        logger.error('Failed to extract playable route from current URL:', window.location.href);
         return null;
     }
 
@@ -43,13 +62,13 @@ function sendPlayEventToMain(button: HTMLElement | null = null): string | null {
     // 获取当前UI上选中的是第几个播放源
     const sourceIndex = getCurrentSelectedVersionIndex();
 
-    if (id && token) {
+    if (token) {
         // 将动态获取的 sourceIndex 传给主进程
-        const playData: PlayMovieData = { id, token, sourceIndex };
+        const playData: PlayMovieData = { id: route.id, token, sourceIndex, routeType: route.routeType };
         ipcRenderer.send('play-movie', playData);
-        return id;
+        return route.id;
     } else {
-        logger.error('Failed to extract ID or token. ID:', id, 'Token:', token);
+        logger.error('Failed to extract token. ID:', route.id, 'Token:', token);
         return null;
     }
 }
@@ -167,6 +186,10 @@ function interceptOriginalButton(): void {
 }
 
 async function injectCustomPlayBtn(): Promise<void> {
+    if (!getPlayRouteFromUrl(window.location.href)) {
+        return;
+    }
+
     // 获取配置
     const config = await getPlayButtonConfig();
 

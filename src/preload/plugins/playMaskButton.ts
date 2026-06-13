@@ -28,6 +28,25 @@ async function getPlayButtonConfig(): Promise<{ hideOriginalPlayButton: boolean 
     });
 }
 
+type PlayRouteType = 'item' | 'season';
+
+interface PlayRoute {
+    id: string;
+    routeType: PlayRouteType;
+}
+
+function getPlayRouteFromUrl(url: string): PlayRoute | null {
+    const match = url.match(/\/v\/(movie|other|tv\/episode|tv\/season)\/([a-f0-9]{32})(?:[/?#]|$)/i);
+    if (!match) {
+        return null;
+    }
+
+    return {
+        id: match[2],
+        routeType: match[1].toLowerCase() === 'tv/season' ? 'season' : 'item',
+    };
+}
+
 // 调用外置播放器的公共方法
 async function playWithMpv(button: HTMLElement): Promise<void> {
     // 先尝试简化的 DOM 方法
@@ -42,7 +61,7 @@ async function playWithMpv(button: HTMLElement): Promise<void> {
             logger.info('Successfully obtained item_guid from original logic:', itemGuid);
             const token = getCookie('Trim-MC-token');
             if (token) {
-                const playData: PlayMovieData = { id: itemGuid, token: token, sourceIndex: 0 };
+                const playData: PlayMovieData = { id: itemGuid, token: token, sourceIndex: 0, routeType: 'item' };
                 ipcRenderer.send('play-movie', playData);
             } else {
                 logger.error('No token found');
@@ -159,76 +178,49 @@ function tryGetItemGuidFromOriginalLogic(button: HTMLElement): Promise<string | 
     });
 }
 
-function extractGuidFromUrl(url: string): string | null {
-    const guidMatch = url.match(/\/v\/(?:movie|tv\/episode|other)\/([a-f0-9]{32})/i);
-    return guidMatch?.[1] ?? null;
-}
-
-// 从DOM获取id
-function getItemGuidFromDOM(button: HTMLElement): string | null {
+// 从DOM获取播放路由
+function getPlayRouteFromDOM(button: HTMLElement): PlayRoute | null {
     try {
-        // 新版首页/继续播放卡片把播放遮罩包在详情链接里：
-        // <a href="/v/movie/<guid>"><div class="play-mask__btn--play"></div></a>
-        const closestLink = button.closest('a[href*="/v/movie/"], a[href*="/v/tv/episode/"], a[href*="/v/other/"]') as HTMLAnchorElement | null;
-        if (closestLink) {
-            const guid = extractGuidFromUrl(closestLink.href);
-            if (guid) {
-                logger.info('Found guid from closest link:', guid);
-                return guid;
+        // 新版卡片把播放遮罩包在详情链接里。只读取最近的包裹链接；
+        // 不向父容器子树搜索，避免在卡片列表里拿到其他卡片的 guid。
+        const link = button.closest('a[href]') as HTMLAnchorElement | null;
+        if (link) {
+            const route = getPlayRouteFromUrl(link.href);
+            if (route) {
+                logger.info('Found play route from card link:', route.id, route.routeType);
+                return route;
             }
         }
 
-        // 旧版结构：从播放按钮向上查找包含 data-id="details" 的容器
-        let container: Element | null = button;
-        while (container && container !== document.body) {
-            if (container.getAttribute('data-id') === 'details') {
-                const link = container.querySelector('a[href*="/v/movie/"], a[href*="/v/tv/episode/"], a[href*="/v/other/"]') as HTMLAnchorElement | null;
-                if (link) {
-                    const guid = extractGuidFromUrl(link.href);
-                    if (guid) {
-                        logger.info('Found guid from details container:', guid);
-                        return guid;
-                    }
-                }
-                break;
-            }
-            container = container.parentElement;
-        }
-
-        const guidFromUrl = extractGuidFromUrl(window.location.href);
-        if (guidFromUrl) {
-            logger.info('Found guid from URL:', guidFromUrl);
-            return guidFromUrl;
+        const routeFromUrl = getPlayRouteFromUrl(window.location.href);
+        if (routeFromUrl) {
+            logger.info('Found play route from URL:', routeFromUrl.id, routeFromUrl.routeType);
+            return routeFromUrl;
         }
 
         return null;
     } catch (error) {
-        logger.error('Error extracting guid from DOM:', error);
+        logger.error('Error extracting play route from DOM:', error);
         return null;
     }
 }
 
 // 发送播放信息到主进程
 function sendPlayEventToMain(button: HTMLElement | null = null): string | null {
-    let id = '';
+    const route = button ? getPlayRouteFromDOM(button) : null;
 
-    // 尝试从DOM中获取guid
-    if (button) {
-        id = getItemGuidFromDOM(button) || '';
-    }
-
-    if (!id) {
+    if (!route) {
         return null; // 返回 null 表示需要使用拦截方法
     }
 
     const token = getCookie('Trim-MC-token');
 
-    if (id && token) {
-        const playData: PlayMovieData = { id, token, sourceIndex: 0 };
+    if (token) {
+        const playData: PlayMovieData = { id: route.id, token, sourceIndex: 0, routeType: route.routeType };
         ipcRenderer.send('play-movie', playData);
-        return id;
+        return route.id;
     } else {
-        logger.error('Failed to extract ID or token. ID:', id, 'Token:', token);
+        logger.error('Failed to extract token. ID:', route.id, 'Token:', token);
         return null;
     }
 }
