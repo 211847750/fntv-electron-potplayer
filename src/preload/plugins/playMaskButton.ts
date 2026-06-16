@@ -28,7 +28,7 @@ async function getPlayButtonConfig(): Promise<{ hideOriginalPlayButton: boolean 
     });
 }
 
-type PlayRouteType = 'item' | 'season';
+type PlayRouteType = 'item' | 'season' | 'series';
 
 interface PlayRoute {
     id: string;
@@ -36,14 +36,16 @@ interface PlayRoute {
 }
 
 function getPlayRouteFromUrl(url: string): PlayRoute | null {
-    const match = url.match(/\/v\/(movie|other|tv\/episode|tv\/season)\/([a-f0-9]{32})(?:[/?#]|$)/i);
+    const match = url.match(/\/v\/(movie|other|tv\/episode|tv\/season|tv)\/([a-f0-9]{32})(?:[/?#]|$)/i);
     if (!match) {
         return null;
     }
 
+    const route = match[1].toLowerCase();
+    const routeType: PlayRouteType = route === 'tv/season' ? 'season' : route === 'tv' ? 'series' : 'item';
     return {
         id: match[2],
-        routeType: match[1].toLowerCase() === 'tv/season' ? 'season' : 'item',
+        routeType,
     };
 }
 

@@ -15,7 +15,7 @@ export interface PlayMovieData {
     id: string;
     token: string;
     sourceIndex: number; // 播放源
-    routeType?: 'item' | 'season';
+    routeType?: 'item' | 'season' | 'series';
 }
 
 export interface Utils {

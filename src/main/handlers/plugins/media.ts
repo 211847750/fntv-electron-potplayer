@@ -21,7 +21,7 @@ interface PlayRequest {
     id: string;
     token: string;
     sourceIndex: number; // 可选，播放源
-    routeType?: 'item' | 'season';
+    routeType?: 'item' | 'season' | 'series';
 }
 
 // 全局播放器实例引用
@@ -294,36 +294,45 @@ async function getPlayInfo(fnapi: fn.ApiService, itemGuid: string): Promise<fn.P
     }
 }
 
-async function resolveSeasonPlayInfo(fnapi: fn.ApiService, seasonGuid: string): Promise<fn.PlayInfo | null> {
-    const seasonInfo = await getPlayInfo(fnapi, seasonGuid);
-    const playItemGuid = seasonInfo?.item?.play_item_guid;
-    if (isGuid(playItemGuid) && playItemGuid !== seasonGuid) {
-        log.info('季页面解析到实际播放项:', seasonGuid, '=>', playItemGuid);
+async function resolveCollectionPlayInfo(fnapi: fn.ApiService, collectionGuid: string, routeName: string): Promise<fn.PlayInfo | null> {
+    const collectionInfo = await getPlayInfo(fnapi, collectionGuid);
+    if (collectionInfo?.type === 'Episode' || collectionInfo?.type === 'Video') {
+        log.info(`${routeName}直接解析为播放项:`, collectionGuid, '=>', collectionInfo.guid);
+        return collectionInfo;
+    }
+
+    const playItemGuid = collectionInfo?.item?.play_item_guid;
+    if (isGuid(playItemGuid) && playItemGuid !== collectionGuid) {
+        log.info(`${routeName}解析到实际播放项:`, collectionGuid, '=>', playItemGuid);
         const playInfo = await getPlayInfo(fnapi, playItemGuid);
         if (playInfo) {
             return playInfo;
         }
     }
 
-    const episodeList = await fnapi.getEpisodeList(seasonGuid);
+    const episodeList = await fnapi.getEpisodeList(collectionGuid);
     if (!episodeList.success || !episodeList.data) {
-        log.error('获取季剧集列表失败:', episodeList ? episodeList.message : '未知错误');
+        log.error(`${routeName}获取剧集列表失败:`, episodeList ? episodeList.message : '未知错误');
         return null;
     }
 
     const episode = chooseSeasonEpisode(episodeList.data);
     if (!episode) {
-        log.warn('季剧集列表为空:', seasonGuid);
+        log.warn(`${routeName}剧集列表为空:`, collectionGuid);
         return null;
     }
 
-    log.info('季页面使用剧集列表解析播放项:', seasonGuid, '=>', episode.guid);
+    log.info(`${routeName}使用剧集列表解析播放项:`, collectionGuid, '=>', episode.guid);
     return getPlayInfo(fnapi, episode.guid);
 }
 
 async function resolvePlayInfo(fnapi: fn.ApiService, request: PlayRequest): Promise<fn.PlayInfo | null> {
     if (request.routeType === 'season') {
-        return resolveSeasonPlayInfo(fnapi, request.id);
+        return resolveCollectionPlayInfo(fnapi, request.id, '季页面');
+    }
+
+    if (request.routeType === 'series') {
+        return resolveCollectionPlayInfo(fnapi, request.id, '剧集页面');
     }
 
     return getPlayInfo(fnapi, request.id);
