@@ -21,7 +21,7 @@ interface PlayRequest {
     id: string;
     token: string;
     sourceIndex: number; // 可选，播放源
-    routeType?: 'item' | 'season' | 'series';
+    routeType?: 'item' | 'season' | 'series' | 'live';
 }
 
 // 全局播放器实例引用
@@ -326,6 +326,51 @@ async function resolveCollectionPlayInfo(fnapi: fn.ApiService, collectionGuid: s
     return getPlayInfo(fnapi, episode.guid);
 }
 
+function isLivePlayInfo(info: fn.PlayInfo): boolean {
+    return info.type === 'LiveChannel' || info.item?.type === 'LiveChannel' || (info.live_channels?.length ?? 0) > 0;
+}
+
+function processLiveMedia(info: fn.PlayInfo): ply.PlayItem[] {
+    const title = info.item?.title || '直播频道';
+    const channels = (info.live_channels || []).filter(channel => channel.can_play !== 0 && channel.path.trim().length > 0);
+
+    return channels.map((channel, index) => {
+        const sourceName = channel.file_name?.trim() || `线路${index + 1}`;
+        return {
+            itemGuid: '',
+            title: channels.length > 1 ? `${title} - ${sourceName}` : title,
+            tvTitle: '',
+            seasonNumber: 0,
+            episodeNumber: 0,
+            ts: 0,
+            duration: 0,
+            playLink: channel.path.trim(),
+        };
+    });
+}
+
+async function recordLivePlayStatus(fnapi: fn.ApiService, info: fn.PlayInfo): Promise<void> {
+    const itemGuid = info.guid || info.item?.guid;
+    const mediaGuid = info.media_guid || info.live_channels?.[0]?.guid;
+    if (!itemGuid || !mediaGuid) {
+        log.warn('直播最近播放记录缺少必要字段:', { itemGuid, mediaGuid });
+        return;
+    }
+
+    const response = await fnapi.recordPlayStatus({
+        item_guid: itemGuid,
+        media_guid: mediaGuid,
+        ts: 0,
+    });
+
+    if (!response.success) {
+        log.error('记录直播最近播放失败:', response.message);
+        return;
+    }
+
+    log.info('记录直播最近播放成功:', itemGuid, mediaGuid);
+}
+
 async function resolvePlayInfo(fnapi: fn.ApiService, request: PlayRequest): Promise<fn.PlayInfo | null> {
     if (request.routeType === 'season') {
         return resolveCollectionPlayInfo(fnapi, request.id, '季页面');
@@ -373,7 +418,16 @@ async function handlePlayMovie(_event: IpcMainEvent, request: PlayRequest): Prom
     };
 
     let playList: ply.PlayItem[] = [];
-    if (type === 'Episode' && parentGuid) {
+    const isLive = request.routeType === 'live' || isLivePlayInfo(playInfo);
+
+    if (isLive) {
+        log.info('当前为直播频道，使用 live_channels 生成播放列表');
+        playList = processLiveMedia(playInfo);
+        for (const mediaItem of playList) {
+            log.info('添加直播源到播放列表:', mediaItem);
+        }
+    }
+    else if (type === 'Episode' && parentGuid) {
         log.info('当前为剧集，尝试获取系列下的所有剧集进行播放');
         const episodeList = await fnapi.getEpisodeList(parentGuid);
         if (!episodeList.success || !episodeList.data) {
@@ -386,7 +440,7 @@ async function handlePlayMovie(_event: IpcMainEvent, request: PlayRequest): Prom
             playList.push(mediaItem);
             log.info('添加剧集到播放列表:', mediaItem);
         }
-    } 
+    }
     else if (type === 'Video' && parentGuid) {
         log.info('当前为其他视频，添加到播放列表');
         const req: ItemListRequest = {
@@ -425,7 +479,7 @@ async function handlePlayMovie(_event: IpcMainEvent, request: PlayRequest): Prom
     const playableIndex = currentIndex >= 0 ? currentIndex : 0;
 
     // 检查是否选择了特定的播放源索引
-    if (sourceIndex > 0) {
+    if (!isLive && sourceIndex > 0) {
         log.info(`使用指定的播放源索引: ${sourceIndex}`);
         // 修改播放列表中的源索引
         playList[playableIndex].playLink = getProxyUrl(config, playList[playableIndex].itemGuid, sourceIndex);
@@ -456,8 +510,11 @@ async function handlePlayMovie(_event: IpcMainEvent, request: PlayRequest): Prom
     // 保存全局引用
     currentPlayer = player;
 
-    // 开始播放
-    player.playList(playList, playableIndex);
+    const started = await player.playList(playList, playableIndex);
+    if (started && isLive) {
+        await recordLivePlayStatus(fnapi, playInfo);
+        await refreshWindow();
+    }
 }
 
 // 生成代理URL

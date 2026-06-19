@@ -459,7 +459,7 @@ export class PotPlayer extends BasePlayer {
     }
 
     private async downloadSubtitleForEpisode(item: PlayItem | null): Promise<void> {
-        if (!item || this.loadedSubtitles.has(item.itemGuid)) {
+        if (!item || !item.itemGuid || this.loadedSubtitles.has(item.itemGuid)) {
             return;
         }
         try {

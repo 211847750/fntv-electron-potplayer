@@ -89,6 +89,14 @@ export interface UserInfo {
  * 播放信息接口
  * 包含视频播放所需的完整信息，包括媒体流、播放配置和详细的项目信息
  */
+export interface LiveChannel {
+    guid: string;
+    path: string;
+    file_name: string;
+    can_play: number;
+    play_error: string;
+}
+
 export interface PlayInfo {
     /** 祖父级GUID，用于层级关系定位 */
     grand_guid: string;
@@ -102,7 +110,7 @@ export interface PlayInfo {
         skip_opening: number | null;
         /** 跳过片尾的时长/距结尾秒数，null表示不跳过 */
         skip_ending: number | null;
-    };
+    } | null;
     /** 播放进度时间戳（秒） */
     ts: number;
     /** 内容类型，如"Episode"表示剧集 */
@@ -178,6 +186,8 @@ export interface PlayInfo {
         /** 逻辑类型标识 */
         logic_type: number;
     };
+    /** 直播频道源列表 */
+    live_channels?: LiveChannel[];
 }
 
 /**
@@ -196,18 +206,17 @@ export interface PlayStatusData {
     item_guid: string;
     /** 媒体文件的唯一标识符 */
     media_guid: string;
-    /** 视频流的唯一标识符 */
-    video_guid: string;
+    video_guid?: string;
     /** 音频流的唯一标识符 */
-    audio_guid: string;
+    audio_guid?: string;
     /** 字幕流的唯一标识符 */
-    subtitle_guid: string;
+    subtitle_guid?: string;
     /** 播放链接 */
-    play_link: string;
+    play_link?: string;
     /** 播放进度时间戳（秒） */
     ts: number;
     /** 视频总时长（秒） */
-    duration: number;
+    duration?: number;
 }
 
 /**
