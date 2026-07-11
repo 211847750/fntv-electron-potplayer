@@ -67,6 +67,7 @@ export class PotPlayer extends BasePlayer {
     private enableSkipIntro = true;
     private enableSkipOutro = true;
     private loadedSubtitles = new Map<string, string>();  // itemGuid -> subtitlePath
+    private downloadingSubtitles = new Set<string>();  // in-flight itemGuid set
     private episodeProgress = new Map<string, PlayStatusData>();  // itemGuid -> latest progress
 
     constructor(config: Config) {
@@ -101,19 +102,18 @@ export class PotPlayer extends BasePlayer {
 
         this.currentIndex = pos;
         this.currentItem = infos[pos] || infos[0];
-        this.exitEmitted = false;
-        this.loadedSubtitles.clear();
+        this.downloadingSubtitles.clear();
         this.episodeProgress.clear();
 
         // 预下载当前剧集字幕
-        this.downloadSubtitleForEpisode(this.currentItem);
+        await this.downloadSubtitleForEpisode(this.currentItem);
 
         this.updateGlobalStatus(this.statusFromItem(this.currentItem));
 
         try {
             const playlistPath = await this.generatePlaylist(infos, pos);
-            const bridgeArgs = this.createBridgeArgs(playlistPath, args || []);
-
+            const subtitlePaths = this.collectLoadedSubtitlePaths();
+            const bridgeArgs = this.createBridgeArgs(playlistPath, subtitlePaths, args || []);
             this.bridgeProcess = spawn(bridgePath, bridgeArgs, {
                 detached: false,
                 stdio: ['pipe', 'pipe', 'pipe'],
@@ -213,13 +213,17 @@ export class PotPlayer extends BasePlayer {
         return playlistPath;
     }
 
-    private createBridgeArgs(playlistPath: string, extraArgs: string[]): string[] {
+    private createBridgeArgs(playlistPath: string, subtitlePaths: string[], extraArgs: string[]): string[] {
         const bridgeArgs = [
             'play',
             '--potplayer', this.config.playerPath,
             '--playlist', playlistPath,
             '--interval', BRIDGE_PROGRESS_INTERVAL
         ];
+
+        for (const subPath of subtitlePaths) {
+            bridgeArgs.push('--sub', subPath);
+        }
 
         for (const extraArg of extraArgs) {
             bridgeArgs.push('--arg', extraArg);
@@ -459,9 +463,22 @@ export class PotPlayer extends BasePlayer {
     }
 
     private async downloadSubtitleForEpisode(item: PlayItem | null): Promise<void> {
-        if (!item || !item.itemGuid || this.loadedSubtitles.has(item.itemGuid)) {
+        if (!item || !item.itemGuid) {
             return;
         }
+
+        // 已缓存且文件存在 → 跳过
+        const cachedPath = this.loadedSubtitles.get(item.itemGuid);
+        if (cachedPath && fs.existsSync(cachedPath)) {
+            return;
+        }
+
+        // 正在下载中 → 跳过
+        if (this.downloadingSubtitles.has(item.itemGuid)) {
+            return;
+        }
+
+        this.downloadingSubtitles.add(item.itemGuid);
         try {
             const fnapi = this.getFnApi();
             const subs = await fnapi.getSubtitle(item.itemGuid);
@@ -479,26 +496,37 @@ export class PotPlayer extends BasePlayer {
             }
         } catch (error) {
             log.debug('下载字幕失败:', error);
+        } finally {
+            this.downloadingSubtitles.delete(item.itemGuid);
         }
     }
-
     private loadSubtitleForEpisode(item: PlayItem | null): void {
         if (!item) {
             return;
         }
         const subPath = this.loadedSubtitles.get(item.itemGuid);
-        if (subPath) {
+        if (subPath && fs.existsSync(subPath)) {
             this.sendCommand({ command: 'loadSubtitle', path: subPath });
             log.info(`发送字幕到Bridge: ${subPath}`);
         } else {
             // 字幕可能还在下载，等待完成后发送
             this.downloadSubtitleForEpisode(item).then(() => {
                 const p = this.loadedSubtitles.get(item.itemGuid);
-                if (p) {
+                if (p && fs.existsSync(p)) {
                     this.sendCommand({ command: 'loadSubtitle', path: p });
                 }
             });
         }
+    }
+
+    private collectLoadedSubtitlePaths(): string[] {
+        const paths: string[] = [];
+        for (const p of this.loadedSubtitles.values()) {
+            if (p && fs.existsSync(p)) {
+                paths.push(p);
+            }
+        }
+        return paths;
     }
 
 

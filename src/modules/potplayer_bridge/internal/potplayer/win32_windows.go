@@ -175,7 +175,7 @@ func loadSubtitle(hwnd uintptr, subPath string) {
 	if err != nil {
 		return
 	}
-	pathBytes := uintptr(len(utf16Path)) * unsafe.Sizeof(utf16Path[0])
+	pathBytes := uintptr(len(utf16Path)+1) * unsafe.Sizeof(utf16Path[0]) // +1 for double null
 	totalSize := unsafe.Sizeof(dropfiles{}) + pathBytes
 
 	hMem, _, _ := procGlobalAlloc.Call(0x0042, totalSize)

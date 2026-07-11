@@ -99,34 +99,45 @@ export class ApiService {
      */
     private async cleanupSubtitleDirectory(): Promise<void> {
         try {
-            let totalSize = 0;
-            const files = fs.readdirSync(this.tempDir);
+            const entries = fs.readdirSync(this.tempDir)
+                .map(name => {
+                    const filePath = path.join(this.tempDir, name);
+                    try {
+                        const stats = fs.lstatSync(filePath);
+                        return stats.isFile() ? { filePath, mtime: stats.mtimeMs, size: stats.size } : null;
+                    } catch {
+                        return null;
+                    }
+                })
+                .filter((e): e is { filePath: string; mtime: number; size: number } => e !== null)
+                .sort((a, b) => a.mtime - b.mtime);
 
-            // 计算目录总大小
-            for (const file of files) {
-                const filePath = path.join(this.tempDir, file);
-                const stats = fs.lstatSync(filePath);
-                if (stats.isFile()) {
-                    totalSize += stats.size;
+            const totalSize = entries.reduce((sum, e) => sum + e.size, 0);
+            const maxSize = 100 * 1024 * 1024; // 100MB
+
+            if (totalSize <= maxSize) {
+                log.info(`字幕目录大小 ${(totalSize / 1024 / 1024).toFixed(2)}MB，无需清理`);
+                return;
+            }
+
+            log.info(`字幕目录大小 ${(totalSize / 1024 / 1024).toFixed(2)}MB 超过限制，开始清理...`);
+
+            let removedSize = 0;
+            let removedCount = 0;
+            for (const entry of entries) {
+                if (totalSize - removedSize <= maxSize) {
+                    break;
+                }
+                try {
+                    fs.unlinkSync(entry.filePath);
+                    removedSize += entry.size;
+                    removedCount++;
+                } catch {
+                    // 文件可能已被删除
                 }
             }
 
-            // 如果超过100MB（104857600字节），清理目录
-            const maxSize = 100 * 1024 * 1024; // 100MB
-            if (totalSize > maxSize) {
-                log.info(`字幕目录大小 ${(totalSize / 1024 / 1024).toFixed(2)}MB 超过限制，开始清理...`);
-
-                files.forEach(file => {
-                    const filePath = path.join(this.tempDir, file);
-                    if (fs.lstatSync(filePath).isFile()) {
-                        fs.unlinkSync(filePath);
-                    }
-                });
-
-                log.info('字幕目录清理完成');
-            } else {
-                log.info(`字幕目录大小 ${(totalSize / 1024 / 1024).toFixed(2)}MB，无需清理`);
-            }
+            log.info(`字幕目录清理完成，删除了 ${removedCount} 个文件，释放 ${(removedSize / 1024 / 1024).toFixed(2)}MB`);
         } catch (error) {
             log.error('清理字幕目录时发生错误:', error);
         }
@@ -341,7 +352,7 @@ export class ApiService {
         const failedCount = results.length - successfulDownloads.length;
         const skippedCount = subs.filter(sub => {
             const safeName = (sub.name || sub.id).replace(/[^a-z0-9]/gi, '_');
-            const filePath = path.join(this.tempDir, `${safeName}.${sub.format || 'srt'}`);
+            const filePath = path.join(this.tempDir, `${safeName}@${sub.id}.${sub.format || 'srt'}`);
             return fs.existsSync(filePath);
         }).length;
         const downloadedCount = successfulDownloads.length - skippedCount;
