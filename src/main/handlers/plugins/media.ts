@@ -345,6 +345,7 @@ function processLiveMedia(info: fn.PlayInfo): ply.PlayItem[] {
             ts: 0,
             duration: 0,
             playLink: channel.path.trim(),
+            isLive: true,
         };
     });
 }

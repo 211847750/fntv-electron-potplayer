@@ -17,6 +17,7 @@ export interface PlayItem {
     ts: number;
     duration: number;
     playLink: string;
+    isLive?: boolean;
     introEndSec?: number;
     outroDurationSec?: number;
 }

@@ -105,17 +105,20 @@ export class PotPlayer extends BasePlayer {
         this.currentItem = infos[pos] || infos[0];
         this.downloadingSubtitles.clear();
         this.episodeProgress.clear();
+        const useVirtualFs = this.shouldUseVirtualFs(infos);
 
-        // 先下载当前集，再按列表顺序补齐字幕，确保 VFS 字幕映射不发生错位。
-        await this.downloadSubtitleForEpisode(this.currentItem);
-        await this.downloadSubtitlesForPlaylist();
+        if (useVirtualFs) {
+            // 先下载当前集，再按列表顺序补齐字幕，确保 VFS 字幕映射不发生错位。
+            await this.downloadSubtitleForEpisode(this.currentItem);
+            await this.downloadSubtitlesForPlaylist();
+        }
 
         this.updateGlobalStatus(this.statusFromItem(this.currentItem));
 
         try {
             const playlistPath = await this.generatePlaylist(infos, pos);
-            const subtitlePaths = this.collectSubtitlePathsInPlaylistOrder();
-            const bridgeArgs = this.createBridgeArgs(playlistPath, subtitlePaths, args || []);
+            const subtitlePaths = useVirtualFs ? this.collectSubtitlePathsInPlaylistOrder() : [];
+            const bridgeArgs = this.createBridgeArgs(playlistPath, subtitlePaths, args || [], useVirtualFs);
             this.bridgeProcess = spawn(bridgePath, bridgeArgs, {
                 detached: false,
                 stdio: ['pipe', 'pipe', 'pipe'],
@@ -219,7 +222,7 @@ export class PotPlayer extends BasePlayer {
         return playlistPath;
     }
 
-    private createBridgeArgs(playlistPath: string, subtitlePaths: string[], extraArgs: string[]): string[] {
+    private createBridgeArgs(playlistPath: string, subtitlePaths: string[], extraArgs: string[], useVirtualFs: boolean): string[] {
         const bridgeArgs = [
             'play',
             '--potplayer', this.config.playerPath,
@@ -231,13 +234,19 @@ export class PotPlayer extends BasePlayer {
             bridgeArgs.push('--sub', subPath);
         }
 
-        bridgeArgs.push('--virtual-drive', VIRTUAL_DRIVE);
+        if (useVirtualFs) {
+            bridgeArgs.push('--virtual-drive', VIRTUAL_DRIVE);
+        }
 
         for (const extraArg of extraArgs) {
             bridgeArgs.push('--arg', extraArg);
         }
 
         return bridgeArgs;
+    }
+
+    private shouldUseVirtualFs(infos: PlayItem[]): boolean {
+        return infos.length > 0 && infos.every(item => item.isLive !== true);
     }
 
     private sendCommand(command: Record<string, unknown>): void {
