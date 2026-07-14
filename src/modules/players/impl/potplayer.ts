@@ -17,6 +17,7 @@ import { PlayerFactory } from '../factory';
 import log from '../../logger';
 
 const BRIDGE_PROGRESS_INTERVAL = '1s';
+const VIRTUAL_DRIVE = 'P:';
 
 type BridgeEvent = {
     type?: string;
@@ -105,14 +106,15 @@ export class PotPlayer extends BasePlayer {
         this.downloadingSubtitles.clear();
         this.episodeProgress.clear();
 
-        // 预下载当前剧集字幕
+        // 先下载当前集，再按列表顺序补齐字幕，确保 VFS 字幕映射不发生错位。
         await this.downloadSubtitleForEpisode(this.currentItem);
+        await this.downloadSubtitlesForPlaylist();
 
         this.updateGlobalStatus(this.statusFromItem(this.currentItem));
 
         try {
             const playlistPath = await this.generatePlaylist(infos, pos);
-            const subtitlePaths = this.collectLoadedSubtitlePaths();
+            const subtitlePaths = this.collectSubtitlePathsInPlaylistOrder();
             const bridgeArgs = this.createBridgeArgs(playlistPath, subtitlePaths, args || []);
             this.bridgeProcess = spawn(bridgePath, bridgeArgs, {
                 detached: false,
@@ -128,7 +130,11 @@ export class PotPlayer extends BasePlayer {
             this.bridgeProcess.stderr?.on('data', data => {
                 const message = String(data).trim();
                 if (message) {
-                    log.debug('PotPlayer Bridge stderr:', message);
+                    if (message.includes('[VFS]')) {
+                        log.info('PotPlayer Bridge:', message);
+                    } else {
+                        log.debug('PotPlayer Bridge stderr:', message);
+                    }
                 }
             });
 
@@ -225,6 +231,8 @@ export class PotPlayer extends BasePlayer {
             bridgeArgs.push('--sub', subPath);
         }
 
+        bridgeArgs.push('--virtual-drive', VIRTUAL_DRIVE);
+
         for (const extraArg of extraArgs) {
             bridgeArgs.push('--arg', extraArg);
         }
@@ -273,7 +281,6 @@ export class PotPlayer extends BasePlayer {
         switch (event.type) {
             case 'ready':
                 log.info('PotPlayer窗口已绑定:', event.hwnd);
-                this.loadSubtitleForEpisode(this.currentItem);
                 break;
             case 'progress':
                 this.handleProgress(event);
@@ -437,7 +444,6 @@ export class PotPlayer extends BasePlayer {
             this.updateGlobalStatus(this.statusFromItem(this.currentItem));
 
             this.applyIntroSeek();
-            this.loadSubtitleForEpisode(this.currentItem);
         }
     }
 
@@ -500,33 +506,18 @@ export class PotPlayer extends BasePlayer {
             this.downloadingSubtitles.delete(item.itemGuid);
         }
     }
-    private loadSubtitleForEpisode(item: PlayItem | null): void {
-        if (!item) {
-            return;
-        }
-        const subPath = this.loadedSubtitles.get(item.itemGuid);
-        if (subPath && fs.existsSync(subPath)) {
-            this.sendCommand({ command: 'loadSubtitle', path: subPath });
-            log.info(`发送字幕到Bridge: ${subPath}`);
-        } else {
-            // 字幕可能还在下载，等待完成后发送
-            this.downloadSubtitleForEpisode(item).then(() => {
-                const p = this.loadedSubtitles.get(item.itemGuid);
-                if (p && fs.existsSync(p)) {
-                    this.sendCommand({ command: 'loadSubtitle', path: p });
-                }
-            });
+
+    private async downloadSubtitlesForPlaylist(): Promise<void> {
+        for (const mapping of this.playlistMapping) {
+            await this.downloadSubtitleForEpisode(mapping.item);
         }
     }
 
-    private collectLoadedSubtitlePaths(): string[] {
-        const paths: string[] = [];
-        for (const p of this.loadedSubtitles.values()) {
-            if (p && fs.existsSync(p)) {
-                paths.push(p);
-            }
-        }
-        return paths;
+    private collectSubtitlePathsInPlaylistOrder(): string[] {
+        return this.playlistMapping.map(mapping => {
+            const subtitlePath = mapping.subtitlePath || this.loadedSubtitles.get(mapping.item.itemGuid) || '';
+            return subtitlePath && fs.existsSync(subtitlePath) ? subtitlePath : '';
+        });
     }
 
 

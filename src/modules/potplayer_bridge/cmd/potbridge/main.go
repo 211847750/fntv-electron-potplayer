@@ -4,10 +4,12 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"fn-potplayer-bridge/internal/potplayer"
 	"fn-potplayer-bridge/internal/protocol"
+	"fn-potplayer-bridge/internal/virtualfs"
 )
 
 type multiFlag []string
@@ -49,6 +51,7 @@ func runPlay(args []string) int {
 	interval := fs.Duration("interval", potplayer.DefaultInterval, "progress event interval")
 	startupTimeout := fs.Duration("startup-timeout", potplayer.DefaultStartupTimeout, "window bind timeout")
 	playlistPath := fs.String("playlist", "", "DPL playlist file path")
+	virtualDrive := fs.String("virtual-drive", "", "WinFsp virtual drive letter (e.g. V:)")
 	fs.Var(&subtitles, "sub", "subtitle path, can be repeated")
 	fs.Var(&extraArgs, "arg", "extra PotPlayer argument, can be repeated")
 
@@ -67,11 +70,43 @@ func runPlay(args []string) int {
 		Interval:       *interval,
 		StartupTimeout: *startupTimeout,
 		PlaylistPath:   *playlistPath,
+		VirtualDrive:   *virtualDrive,
+	}
+	if *virtualDrive != "" && *playlistPath != "" {
+		entries := potplayer.ReadPlaylistEntries(*playlistPath)
+		vfsEntries := make([]virtualfs.FileEntry, 0, len(entries))
+		for i, e := range entries {
+			fe := virtualfs.FileEntry{
+				Name:        e.Title,
+				VideoURL:    e.URL,
+				Title:       e.Title,
+				Start:       e.Start,
+				StartSec:    e.StartSec,
+				DurationSec: e.Duration,
+			}
+			if fe.Name == "" {
+				fe.Name = fmt.Sprintf("episode_%02d", i+1)
+			}
+			if i < len(subtitles) {
+				fe.SubPath = subtitles[i]
+				fe.SubExt = filepath.Ext(subtitles[i])
+			}
+			vfsEntries = append(vfsEntries, fe)
+		}
+
+		vfsDPL, cleanup, err := virtualfs.Setup(*playlistPath, *virtualDrive, vfsEntries)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "VFS error: %v\n", err)
+			return 1
+		}
+		defer cleanup()
+		req.PlaylistPath = vfsDPL
+		req.SubtitlePaths = nil
 	}
 
 	return potplayer.PlayAndMonitor(req, events)
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: potbridge play --potplayer <path> [--url <url> | --playlist <path>] [--title <title>] [--seek <seconds>] [--sub <path>]")
+	fmt.Fprintln(os.Stderr, "usage: potbridge play --potplayer <path> [--url <url> | --playlist <path>] [--virtual-drive <X:>] [--sub <path>]...")
 }

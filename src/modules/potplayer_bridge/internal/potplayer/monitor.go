@@ -48,7 +48,7 @@ func PlayAndMonitor(req PlayRequest, events *protocol.Writer) int {
 	cmdChan := make(chan Command, 16)
 	go readStdinCommands(cmdChan)
 
-	playlistEntries := readPlaylistEntries(req.PlaylistPath)
+	playlistEntries := ReadPlaylistEntries(req.PlaylistPath)
 	var lastTitle string
 
 	for {
@@ -83,14 +83,17 @@ func PlayAndMonitor(req PlayRequest, events *protocol.Writer) int {
 	}
 }
 
-type playlistEntry struct {
+type PlaylistEntry struct {
 	Index     int
 	Title     string
 	URL       string
 	EpisodeID string
+	Start     bool
+	StartSec  int64
+	Duration  int64
 }
 
-func readPlaylistEntries(playlistPath string) []playlistEntry {
+func ReadPlaylistEntries(playlistPath string) []PlaylistEntry {
 	if strings.TrimSpace(playlistPath) == "" {
 		return nil
 	}
@@ -101,10 +104,26 @@ func readPlaylistEntries(playlistPath string) []playlistEntry {
 	}
 	defer file.Close()
 
-	entries := map[int]*playlistEntry{}
+	entries := map[int]*PlaylistEntry{}
+	var playName string
+	var playTimeMs int64
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		line := strings.TrimSpace(strings.TrimPrefix(scanner.Text(), "\ufeff"))
+		if !strings.Contains(line, "*") {
+			key, value, ok := strings.Cut(line, "=")
+			if !ok {
+				continue
+			}
+			switch key {
+			case "playname":
+				playName = strings.TrimSpace(value)
+			case "playtime":
+				playTimeMs, _ = strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+			}
+			continue
+		}
+
 		parts := strings.SplitN(line, "*", 3)
 		if len(parts) != 3 {
 			continue
@@ -117,7 +136,7 @@ func readPlaylistEntries(playlistPath string) []playlistEntry {
 
 		entry := entries[playlistIndex]
 		if entry == nil {
-			entry = &playlistEntry{Index: playlistIndex - 1}
+			entry = &PlaylistEntry{Index: playlistIndex - 1}
 			entries[playlistIndex] = entry
 		}
 
@@ -127,14 +146,24 @@ func readPlaylistEntries(playlistPath string) []playlistEntry {
 			entry.EpisodeID = extractEpisodeID(entry.URL)
 		case "title":
 			entry.Title = strings.TrimSpace(parts[2])
+		case "duration2":
+			entry.Duration, _ = strconv.ParseInt(strings.TrimSpace(parts[2]), 10, 64)
+		case "start":
+			entry.StartSec, _ = strconv.ParseInt(strings.TrimSpace(parts[2]), 10, 64)
 		}
 	}
 	if scanner.Err() != nil {
 		return nil
 	}
 
-	result := make([]playlistEntry, 0, len(entries))
+	result := make([]PlaylistEntry, 0, len(entries))
 	for _, entry := range entries {
+		if playName != "" && entry.URL == playName {
+			entry.Start = true
+			if entry.StartSec <= 0 && playTimeMs > 0 {
+				entry.StartSec = playTimeMs / 1000
+			}
+		}
 		result = append(result, *entry)
 	}
 	sort.Slice(result, func(i, j int) bool {
@@ -156,7 +185,7 @@ func extractEpisodeID(rawURL string) string {
 	return strings.TrimSpace(value)
 }
 
-func buildEpisodeChangedEvent(windowTitle string, entries []playlistEntry) protocol.Event {
+func buildEpisodeChangedEvent(windowTitle string, entries []PlaylistEntry) protocol.Event {
 	entry := matchPlaylistEntry(windowTitle, entries)
 	if entry == nil {
 		return protocol.Event{Type: protocol.EventEpisodeChanged, Message: windowTitle}
@@ -175,7 +204,7 @@ func buildEpisodeChangedEvent(windowTitle string, entries []playlistEntry) proto
 	}
 }
 
-func matchPlaylistEntry(windowTitle string, entries []playlistEntry) *playlistEntry {
+func matchPlaylistEntry(windowTitle string, entries []PlaylistEntry) *PlaylistEntry {
 	normalizedTitle := normalizeTitle(windowTitle)
 	if normalizedTitle == "" {
 		return nil

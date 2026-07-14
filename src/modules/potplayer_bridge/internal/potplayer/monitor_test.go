@@ -29,7 +29,7 @@ func TestBuildEpisodeChangedEventFromDPLTitle(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	entries := readPlaylistEntries(file.Name())
+	entries := ReadPlaylistEntries(file.Name())
 	event := buildEpisodeChangedEvent("测试剧 - S1E2: 第二集 - PotPlayer", entries)
 
 	if event.Index == nil || *event.Index != 1 {
@@ -43,8 +43,48 @@ func TestBuildEpisodeChangedEventFromDPLTitle(t *testing.T) {
 	}
 }
 
+func TestReadPlaylistEntriesPreservesPlaynameWithQuery(t *testing.T) {
+	playlist := "\ufeffDAUMPLAYLIST\n" +
+		"playname=http://127.0.0.1:22345/api/v1/playvideo/guid-b?token=x&domain=http%3A%2F%2Fnas\n" +
+		"playtime=42000\n" +
+		"1*file*http://127.0.0.1:22345/api/v1/playvideo/guid-a?token=x&domain=http%3A%2F%2Fnas\n" +
+		"1*title*测试剧 - S1E1: 第一集\n" +
+		"2*file*http://127.0.0.1:22345/api/v1/playvideo/guid-b?token=x&domain=http%3A%2F%2Fnas\n" +
+		"2*title*测试剧 - S1E2: 第二集\n"
+
+	file, err := os.CreateTemp("", "fntv-playlist-*.dpl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(file.Name())
+
+	if _, err := file.WriteString(playlist); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	entries := ReadPlaylistEntries(file.Name())
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(entries))
+	}
+	if entries[0].Start {
+		t.Fatal("first entry should not be start entry")
+	}
+	if !entries[1].Start {
+		t.Fatal("second entry should be start entry")
+	}
+	if entries[1].StartSec != 42 {
+		t.Fatalf("expected start sec 42, got %d", entries[1].StartSec)
+	}
+	if entries[1].EpisodeID != "guid-b" {
+		t.Fatalf("expected guid-b, got %q", entries[1].EpisodeID)
+	}
+}
+
 func TestBuildEpisodeChangedEventKeepsZeroIndex(t *testing.T) {
-	entries := []playlistEntry{{
+	entries := []PlaylistEntry{{
 		Index:     0,
 		Title:     "测试剧 - S1E1: 第一集",
 		URL:       "http://127.0.0.1:22345/api/v1/playvideo/guid-a?token=x",

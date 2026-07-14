@@ -10,6 +10,9 @@ APP_VERSION="$(node -p "require('./package.json').version")"
 
 mkdir -p "$GOCACHE"
 
+echo "==> Preparing WinFsp runtime"
+npm run prepare:winfsp
+
 echo "==> Building Windows proxy"
 npm run build:proxy:win
 

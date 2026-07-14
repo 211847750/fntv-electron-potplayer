@@ -1,6 +1,6 @@
 {
     "name": "fntv-electron-potplayer",
-    "version": "0.3.5",
+    "version": "0.3.6",
     "description": "A fntv Electron fork with PotPlayer bridge support",
     "main": "dest/main/main.js",
     "scripts": {
@@ -15,10 +15,11 @@
         "compile": "tsc",
         "watch": "tsc --watch",
         "clean": "rimraf dest",
-        "build:win": "npm-run-all -s build:proxy:win build:potbridge:win compile && electron-builder --win",
+        "build:win": "npm-run-all -s prepare:winfsp build:proxy:win build:potbridge:win compile && electron-builder --win",
         "build:mac": "npm-run-all -s build:proxy:mac:x64 build:proxy:mac:arm64 build:proxy:mac:universal compile clean:proxy:mac && electron-builder --mac",
         "build:linux": "npm-run-all -s build:proxy:linux compile && electron-builder --linux",
-        "build:win:test": "bash scripts/build-win-test.sh"
+        "build:win:test": "bash scripts/build-win-test.sh",
+        "prepare:winfsp": "node scripts/prepare-winfsp.js"
     },
     "author": "tracing",
     "devDependencies": {
@@ -92,6 +93,13 @@
                 {
                     "from": "third_party/potplayer-bridge",
                     "to": "third_party/potplayer-bridge",
+                    "filter": [
+                        "**/*"
+                    ]
+                },
+                {
+                    "from": "third_party/winfsp",
+                    "to": "third_party/winfsp",
                     "filter": [
                         "**/*"
                     ]
@@ -192,7 +200,10 @@
             "allowToChangeInstallationDirectory": true,
             "oneClick": false,
             "createDesktopShortcut": true,
-            "createStartMenuShortcut": true
+            "createStartMenuShortcut": true,
+            "include": "build/installer.nsh",
+            "perMachine": true,
+            "allowElevation": true
         },
         "files": [
             "dest",

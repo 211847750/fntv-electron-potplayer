@@ -17,6 +17,7 @@ type PlayRequest struct {
 	Interval       time.Duration
 	StartupTimeout time.Duration
 	PlaylistPath   string
+	VirtualDrive   string // e.g. "V:" for WinFsp virtual drive
 }
 
 type State struct {
