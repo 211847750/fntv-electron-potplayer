@@ -4,7 +4,7 @@ import type { Utils } from './types';
 // 检查当前页面是否最后一层(电影或剧集页面或者其他页面)
 function checkFinalPageUrl() {
     const url = window.location.href;
-    return url.includes('/v/movie/') || url.includes('/v/tv/episode/') || url.includes('/v/other/');
+    return url.includes('/v/movie/') || url.includes('/v/tv/episode/') || url.includes('/v/other/') || url.includes('/v/folder/');
 }
 
 // 检查当前页面是否为季页面

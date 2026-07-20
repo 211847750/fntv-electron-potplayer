@@ -294,6 +294,27 @@ async function getPlayInfo(fnapi: fn.ApiService, itemGuid: string): Promise<fn.P
     }
 }
 
+async function getFirstPlayableItemFromList(fnapi: fn.ApiService, parentGuid: string, routeName: string): Promise<fn.PlayListItem | null> {
+    const mediaList = await fnapi.getItemList({
+        parent_guid: parentGuid,
+        exclude_folder: 1,
+        sort_column: 'sort_title',
+        sort_type: 'ASC',
+    });
+    if (!mediaList.success || !mediaList.data?.list) {
+        log.error(`${routeName}获取子项目列表失败:`, mediaList ? mediaList.message : '未知错误');
+        return null;
+    }
+
+    const item = chooseSeasonEpisode(mediaList.data.list);
+    if (!item) {
+        log.warn(`${routeName}子项目列表为空:`, parentGuid);
+        return null;
+    }
+
+    return item;
+}
+
 async function resolveCollectionPlayInfo(fnapi: fn.ApiService, collectionGuid: string, routeName: string): Promise<fn.PlayInfo | null> {
     const collectionInfo = await getPlayInfo(fnapi, collectionGuid);
     if (collectionInfo?.type === 'Episode' || collectionInfo?.type === 'Video') {
@@ -311,19 +332,20 @@ async function resolveCollectionPlayInfo(fnapi: fn.ApiService, collectionGuid: s
     }
 
     const episodeList = await fnapi.getEpisodeList(collectionGuid);
-    if (!episodeList.success || !episodeList.data) {
+    if (episodeList.success && episodeList.data) {
+        const episode = chooseSeasonEpisode(episodeList.data);
+        if (episode) {
+            log.info(`${routeName}使用剧集列表解析播放项:`, collectionGuid, '=>', episode.guid);
+            return getPlayInfo(fnapi, episode.guid);
+        }
+
+        log.warn(`${routeName}剧集列表为空，尝试子项目列表:`, collectionGuid);
+    } else {
         log.error(`${routeName}获取剧集列表失败:`, episodeList ? episodeList.message : '未知错误');
-        return null;
     }
 
-    const episode = chooseSeasonEpisode(episodeList.data);
-    if (!episode) {
-        log.warn(`${routeName}剧集列表为空:`, collectionGuid);
-        return null;
-    }
-
-    log.info(`${routeName}使用剧集列表解析播放项:`, collectionGuid, '=>', episode.guid);
-    return getPlayInfo(fnapi, episode.guid);
+    const item = await getFirstPlayableItemFromList(fnapi, collectionGuid, routeName);
+    return item ? getPlayInfo(fnapi, item.guid) : null;
 }
 
 function isLivePlayInfo(info: fn.PlayInfo): boolean {
