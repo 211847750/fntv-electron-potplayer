@@ -10,7 +10,7 @@
 - Fork 仓库：[myczh-1/fntv-electron-potplayer](https://github.com/myczh-1/fntv-electron-potplayer)
 - 当前重点：Windows PotPlayer 播放、进度读取、进度回传、记录位置恢复
 - 发布包名：`FNMedia-PotPlayer_${version}_${os}_${arch}.${ext}`
-- 当前版本：`0.3.6`
+- 当前版本：`0.3.8`
 - License：[GPL-3.0](LICENSE)
 
 这个 fork 主要用于 PotPlayer 支持实验与自用增强，欢迎反馈，但不承诺长期维护或持续跟进上游版本。
@@ -92,7 +92,7 @@ npm run build:win:test
 输出文件：
 
 ```text
-release/FNMedia-PotPlayer_0.3.6_win_x64.exe
+release/FNMedia-PotPlayer_0.3.8_win_x64.exe
 ```
 
 常用命令：
@@ -110,10 +110,16 @@ npm run build:win
 
 ```text
 [VFS] mounted drive=P: entries=...
-[VFS] read name="..." offset=... length=... request=... totalMiB=...
+[VFS] read name="..." offset=... requested=... actual=... cacheBytes=... upstreamRequests=... fetchedBytes=...
 ```
 
-`read` 行表示 PotPlayer 通过虚拟盘发起的文件读取。当前实现会把每次文件读取转换为对应的 HTTP Range 请求；不会向 PotPlayer 暴露原始 HTTP URL，也不会主动发起 `bytes=0-` 这种开放范围整片请求。
+Windows 日志文件位于：
+
+```text
+%APPDATA%\fntv-electron-potplayer\logs\app.log
+```
+
+`read` 行表示 PotPlayer 通过虚拟盘发起的文件读取。当前实现使用 1 MiB 对齐读取窗口，每个视频最多保留两个数据块；缓存命中不会再次发起 HTTP 请求。未命中时使用边界明确的 HTTP Range 请求，不会向 PotPlayer 暴露原始 HTTP URL，也不会主动发起 `bytes=0-` 这种开放范围整片请求。
 
 ## 上游能力
 

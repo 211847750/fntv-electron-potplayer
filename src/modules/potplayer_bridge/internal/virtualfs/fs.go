@@ -9,7 +9,6 @@ import (
 	"os"
 	"path"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -18,6 +17,11 @@ import (
 )
 
 const defaultVideoSize int64 = 1 << 40
+
+var (
+	mediaHTTPClient = &http.Client{Timeout: 60 * time.Second}
+	probeHTTPClient = &http.Client{Timeout: 15 * time.Second}
+)
 
 type fileKind int
 
@@ -38,6 +42,7 @@ type MediaFile struct {
 	videoSize int64
 	readCount uint64
 	readBytes int64
+	cache     mediaBlockCache
 }
 
 type virtualFile struct {
@@ -200,6 +205,11 @@ func (mf *MediaFile) VideoSize() int64 {
 
 	size, err := probeVideoSize(mf.VideoURL, mf.VideoHeaders)
 	if err != nil || size <= 0 {
+		errText := "size unavailable"
+		if err != nil {
+			errText = err.Error()
+		}
+		fmt.Fprintf(os.Stderr, "[VFS] size probe failed name=%q error=%q fallback=%d\n", mf.Name, errText, defaultVideoSize)
 		mf.videoSize = defaultVideoSize
 		return mf.videoSize
 	}
@@ -211,59 +221,161 @@ func (mf *MediaFile) ReadVideo(buff []byte, ofst int64) int {
 	if len(buff) == 0 {
 		return 0
 	}
-
-	req, err := http.NewRequest(http.MethodGet, mf.VideoURL, nil)
-	if err != nil {
-		return -fuse.EIO
+	started := time.Now()
+	stats := videoReadStats{}
+	finish := func(actual int, readErr error) int {
+		mf.logRead(ofst, len(buff), actual, stats, time.Since(started), readErr)
+		if readErr != nil {
+			return -fuse.EIO
+		}
+		return actual
 	}
 
-	end := ofst + int64(len(buff)) - 1
+	actual := 0
+	for actual < len(buff) {
+		currentOffset := ofst + int64(actual)
+		if n := mf.cache.readAt(buff[actual:], currentOffset); n > 0 {
+			actual += n
+			stats.cacheBytes += n
+			continue
+		}
+
+		blockStart := mediaBlockStart(currentOffset)
+		blockEnd := blockStart + mediaBlockSize - 1
+		if size := mf.cachedVideoSize(); size > 0 && size != defaultVideoSize {
+			if blockStart >= size {
+				return finish(actual, nil)
+			}
+			if blockEnd >= size {
+				blockEnd = size - 1
+			}
+		}
+
+		data, statusCode, contentRange, err := mf.fetchVideoRange(blockStart, blockEnd)
+		stats.upstreamRequests++
+		stats.fetchedBytes += len(data)
+		stats.statusCode = statusCode
+		stats.contentRange = contentRange
+		if err != nil {
+			return finish(actual, err)
+		}
+		if len(data) == 0 {
+			return finish(actual, nil)
+		}
+
+		mf.cache.store(blockStart, data)
+		blockOffset := currentOffset - blockStart
+		if blockOffset < 0 || blockOffset >= int64(len(data)) {
+			return finish(actual, fmt.Errorf("fetched block bytes=%d-%d does not contain offset %d", blockStart, blockStart+int64(len(data))-1, currentOffset))
+		}
+		n := copy(buff[actual:], data[blockOffset:])
+		if n == 0 {
+			return finish(actual, fmt.Errorf("fetched block made no read progress at offset %d", currentOffset))
+		}
+		actual += n
+	}
+	return finish(actual, nil)
+}
+
+func (mf *MediaFile) cachedVideoSize() int64 {
+	mf.mu.Lock()
+	defer mf.mu.Unlock()
+	return mf.videoSize
+}
+
+func (mf *MediaFile) fetchVideoRange(ofst, end int64) ([]byte, int, string, error) {
+	req, err := http.NewRequest(http.MethodGet, mf.VideoURL, nil)
+	if err != nil {
+		return nil, 0, "", err
+	}
+
 	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", ofst, end))
 	for k, v := range mf.VideoHeaders {
 		req.Header.Set(k, v)
 	}
-	mf.logRead(ofst, len(buff))
-
-	client := &http.Client{Timeout: 60 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := mediaHTTPClient.Do(req)
 	if err != nil {
-		return -fuse.EIO
+		return nil, 0, "", err
 	}
 	defer resp.Body.Close()
+	statusCode := resp.StatusCode
+	contentRange := resp.Header.Get("Content-Range")
 
-	if resp.StatusCode != http.StatusPartialContent && resp.StatusCode != http.StatusOK {
-		return -fuse.EIO
-	}
-
-	if resp.StatusCode == http.StatusPartialContent {
-		if size := parseContentRangeSize(resp.Header.Get("Content-Range")); size > 0 {
+	readLength := end - ofst + 1
+	switch resp.StatusCode {
+	case http.StatusPartialContent:
+		rangeEnd, size, rangeErr := validateContentRange(contentRange, ofst, end)
+		if rangeErr != nil {
+			return nil, statusCode, contentRange, rangeErr
+		}
+		readLength = rangeEnd - ofst + 1
+		if readLength <= 0 || readLength > end-ofst+1 {
+			return nil, statusCode, contentRange, fmt.Errorf("invalid response length %d for bytes=%d-%d", readLength, ofst, end)
+		}
+		if size > 0 {
 			mf.mu.Lock()
 			if mf.videoSize <= 0 || mf.videoSize == defaultVideoSize {
 				mf.videoSize = size
 			}
 			mf.mu.Unlock()
 		}
+	case http.StatusOK:
+		if ofst != 0 {
+			return nil, statusCode, contentRange, fmt.Errorf("upstream ignored nonzero Range bytes=%d-%d", ofst, end)
+		}
+		if resp.ContentLength >= 0 && resp.ContentLength < readLength {
+			readLength = resp.ContentLength
+		}
+	default:
+		return nil, statusCode, contentRange, fmt.Errorf("unexpected HTTP status %d", resp.StatusCode)
 	}
 
-	n, err := io.ReadFull(resp.Body, buff)
-	if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
-		return -fuse.EIO
+	if readLength == 0 {
+		return nil, statusCode, contentRange, nil
 	}
-	return n
+	if readLength > int64(maxInt()) {
+		return nil, statusCode, contentRange, fmt.Errorf("response length %d exceeds platform limit", readLength)
+	}
+	data := make([]byte, int(readLength))
+	n, err := io.ReadFull(resp.Body, data)
+	if err != nil {
+		return data[:n], statusCode, contentRange, fmt.Errorf("incomplete Range body: got=%d want=%d: %w", n, readLength, err)
+	}
+	return data, statusCode, contentRange, nil
 }
 
-func (mf *MediaFile) logRead(offset int64, length int) {
+type videoReadStats struct {
+	cacheBytes       int
+	fetchedBytes     int
+	upstreamRequests int
+	statusCode       int
+	contentRange     string
+}
+
+func (mf *MediaFile) logRead(offset int64, requested, actual int, stats videoReadStats, elapsed time.Duration, readErr error) {
 	mf.mu.Lock()
 	mf.readCount++
-	mf.readBytes += int64(length)
+	mf.readBytes += int64(actual)
 	count := mf.readCount
 	totalBytes := mf.readBytes
 	mf.mu.Unlock()
 
-	if count <= 20 || count%50 == 0 {
-		fmt.Fprintf(os.Stderr, "[VFS] read name=%q offset=%d length=%d request=%d totalMiB=%.2f\n",
-			mf.Name, offset, length, count, float64(totalBytes)/(1024*1024))
+	if readErr != nil || count <= 20 || count%50 == 0 {
+		errText := ""
+		if readErr != nil {
+			errText = readErr.Error()
+		}
+		fetchRateMiB := 0.0
+		if elapsed > 0 && stats.fetchedBytes > 0 {
+			fetchRateMiB = float64(stats.fetchedBytes) / (1024 * 1024) / elapsed.Seconds()
+		}
+		fmt.Fprintf(os.Stderr, "[VFS] read name=%q offset=%d requested=%d actual=%d cacheBytes=%d upstreamRequests=%d fetchedBytes=%d status=%d contentRange=%q request=%d totalMiB=%.2f durationMs=%d fetchRateMiBps=%.2f error=%q\n",
+			mf.Name, offset, requested, actual, stats.cacheBytes, stats.upstreamRequests, stats.fetchedBytes, stats.statusCode, stats.contentRange, count, float64(totalBytes)/(1024*1024), elapsed.Milliseconds(), fetchRateMiB, errText)
 	}
+}
+
+func maxInt() int {
+	return int(^uint(0) >> 1)
 }
 
 func probeVideoSize(rawURL string, headers map[string]string) (int64, error) {
@@ -276,8 +388,7 @@ func probeVideoSize(rawURL string, headers map[string]string) (int64, error) {
 		req.Header.Set(k, v)
 	}
 
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := probeHTTPClient.Do(req)
 	if err != nil {
 		return 0, err
 	}
@@ -285,31 +396,16 @@ func probeVideoSize(rawURL string, headers map[string]string) (int64, error) {
 
 	if resp.StatusCode == http.StatusPartialContent {
 		if size := parseContentRangeSize(resp.Header.Get("Content-Range")); size > 0 {
+			_, _ = io.CopyN(io.Discard, resp.Body, 1)
 			return size, nil
 		}
+		return 0, fmt.Errorf("invalid Content-Range for size probe: %q", resp.Header.Get("Content-Range"))
 	}
 
-	if resp.ContentLength > 0 {
+	if resp.StatusCode == http.StatusOK && resp.ContentLength > 0 {
 		return resp.ContentLength, nil
 	}
 	return 0, fmt.Errorf("video size unavailable: status=%d", resp.StatusCode)
-}
-
-func parseContentRangeSize(contentRange string) int64 {
-	_, total, ok := strings.Cut(contentRange, "/")
-	if !ok {
-		return 0
-	}
-	total = strings.TrimSpace(total)
-	if total == "" || total == "*" {
-		return 0
-	}
-
-	size, err := strconv.ParseInt(total, 10, 64)
-	if err != nil || size <= 0 {
-		return 0
-	}
-	return size
 }
 
 func videoExtension(rawURL string) string {

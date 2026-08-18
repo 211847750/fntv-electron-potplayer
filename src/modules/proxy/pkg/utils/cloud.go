@@ -2,7 +2,6 @@ package utils
 
 import (
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -20,8 +19,10 @@ import (
 
 var (
 	// 全局文件大小缓存
-	cache     *bigcache.BigCache
-	cacheOnce sync.Once
+	cache               *bigcache.BigCache
+	cacheOnce           sync.Once
+	cloudClient         = &http.Client{Timeout: 60 * time.Second, Transport: sharedProxyTransport(false)}
+	insecureCloudClient = &http.Client{Timeout: 60 * time.Second, Transport: sharedProxyTransport(true)}
 )
 
 const (
@@ -85,26 +86,21 @@ func getCachedFileInfo(url string) *FileMetaInfo {
 
 // CloudStorageHandler 云盘存储处理器
 type CloudStorageHandler struct {
-	targetURL  string
-	headers    map[string]string
-	skipVerify bool
-	client     *http.Client
+	targetURL string
+	headers   map[string]string
+	client    *http.Client
 }
 
 // NewCloudStorageHandler 创建云盘存储处理器
 func NewCloudStorageHandler(targetURL string, headers map[string]string, skipVerify bool) *CloudStorageHandler {
+	client := cloudClient
+	if skipVerify {
+		client = insecureCloudClient
+	}
 	return &CloudStorageHandler{
-		targetURL:  targetURL,
-		headers:    headers,
-		skipVerify: skipVerify,
-		client: &http.Client{
-			Timeout: 60 * time.Second,
-			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{
-					InsecureSkipVerify: skipVerify,
-				},
-			},
-		},
+		targetURL: targetURL,
+		headers:   headers,
+		client:    client,
 	}
 }
 
@@ -129,31 +125,54 @@ func parseRange(rangeHeader string) (*RangeRequest, error) {
 		return &RangeRequest{Start: 0, End: -1}, nil
 	}
 
-	// 解析 "bytes=start-end" 格式
 	if !strings.HasPrefix(rangeHeader, "bytes=") {
 		return nil, fmt.Errorf("unsupported range format: %s", rangeHeader)
 	}
 
 	rangeStr := strings.TrimPrefix(rangeHeader, "bytes=")
-	parts := strings.Split(rangeStr, "-")
-	if len(parts) != 2 {
+	startText, endText, ok := strings.Cut(rangeStr, "-")
+	if !ok || strings.Contains(endText, "-") || strings.Contains(rangeStr, ",") {
 		return nil, fmt.Errorf("invalid range format: %s", rangeStr)
 	}
 
-	start, err := strconv.ParseInt(parts[0], 10, 64)
-	if err != nil {
-		return nil, fmt.Errorf("invalid start position: %s", parts[0])
+	start, err := strconv.ParseInt(startText, 10, 64)
+	if err != nil || start < 0 {
+		return nil, fmt.Errorf("invalid start position: %s", startText)
 	}
 
 	var end int64 = -1
-	if parts[1] != "" {
-		end, err = strconv.ParseInt(parts[1], 10, 64)
-		if err != nil {
-			return nil, fmt.Errorf("invalid end position: %s", parts[1])
+	if endText != "" {
+		end, err = strconv.ParseInt(endText, 10, 64)
+		if err != nil || end < start {
+			return nil, fmt.Errorf("invalid end position: %s", endText)
 		}
 	}
 
 	return &RangeRequest{Start: start, End: end}, nil
+}
+
+func parseContentRange(contentRange string) (int64, int64, int64, error) {
+	fields := strings.Fields(contentRange)
+	if len(fields) != 2 || fields[0] != "bytes" {
+		return 0, 0, 0, fmt.Errorf("invalid Content-Range format: %s", contentRange)
+	}
+
+	interval, totalText, ok := strings.Cut(fields[1], "/")
+	if !ok {
+		return 0, 0, 0, fmt.Errorf("invalid Content-Range format: %s", contentRange)
+	}
+	startText, endText, ok := strings.Cut(interval, "-")
+	if !ok {
+		return 0, 0, 0, fmt.Errorf("invalid Content-Range interval: %s", interval)
+	}
+
+	start, startErr := strconv.ParseInt(startText, 10, 64)
+	end, endErr := strconv.ParseInt(endText, 10, 64)
+	total, totalErr := strconv.ParseInt(totalText, 10, 64)
+	if startErr != nil || endErr != nil || totalErr != nil || start < 0 || end < start || total <= end {
+		return 0, 0, 0, fmt.Errorf("invalid Content-Range values: %s", contentRange)
+	}
+	return start, end, total, nil
 }
 
 // getMetaInfo 获取文件大小
@@ -187,20 +206,14 @@ func (h *CloudStorageHandler) getMetaInfo() (*FileMetaInfo, error) {
 	}
 
 	contentRange := resp.Header.Get("Content-Range")
-	if contentRange == "" {
-		return nil, fmt.Errorf("missing Content-Range header")
-	}
-
-	// 解析 "bytes 0-0/total" 格式
-	parts := strings.Split(contentRange, "/")
-	if len(parts) != 2 {
-		return nil, fmt.Errorf("invalid Content-Range format: %s", contentRange)
-	}
-
-	totalSize, err := strconv.ParseInt(parts[1], 10, 64)
+	start, end, totalSize, err := parseContentRange(contentRange)
 	if err != nil {
-		return nil, fmt.Errorf("invalid total size: %s", parts[1])
+		return nil, fmt.Errorf("invalid metadata Content-Range %q: %w", contentRange, err)
 	}
+	if start != 0 || end != 0 {
+		return nil, fmt.Errorf("unexpected metadata Content-Range %q", contentRange)
+	}
+	_, _ = io.CopyN(io.Discard, resp.Body, 1)
 
 	// 返回Content-Type
 	contentType := resp.Header.Get("Content-Type")
@@ -241,9 +254,22 @@ func passthroughHeaders(dst gin.ResponseWriter, src *http.Response) {
 }
 
 func (h *CloudStorageHandler) serveMPVRangeSimple(c *gin.Context) {
-	// 1) 获取总大小（用于 clamp 以及 200 -> 206 回退）
+	started := time.Now()
+	requestID := proxyRequestCount.Add(1)
+	requestedRange := c.GetHeader("Range")
+	var (
+		contentRange   string
+		upstreamStatus int
+		proxyErr       error
+	)
+	defer func() {
+		logProxyResult(requestID, "chunked", requestedRange, contentRange, upstreamStatus, c.Writer.Status(), c.Writer.Size(), time.Since(started), proxyErr)
+	}()
+
+	// 1) 获取总大小
 	info, err := h.getMetaInfo()
 	if err != nil {
+		proxyErr = err
 		logger.Errorf("getMetaInfo failed: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get meta"})
 		return
@@ -252,6 +278,7 @@ func (h *CloudStorageHandler) serveMPVRangeSimple(c *gin.Context) {
 	// 2) 解析客户端 Range；无 Range 时按 0- 处理
 	rr, err := parseRange(c.GetHeader("Range"))
 	if err != nil {
+		proxyErr = err
 		// 容错：当 Range 不合法，返回 416
 		logger.Warnf("invalid Range: %v", err)
 		h.sendRangeError(c, info.Size)
@@ -267,14 +294,21 @@ func (h *CloudStorageHandler) serveMPVRangeSimple(c *gin.Context) {
 		return
 	}
 
-	// 固定只回 10MiB：end = min(start + 10MiB - 1, total-1)
-	end := start + ChunkSize - 1
+	end := rr.End
+	if end < 0 || end > start+ChunkSize-1 {
+		end = start + ChunkSize - 1
+	}
 	if end >= info.Size {
 		end = info.Size - 1
 	}
 
 	// 3) 直连上游（仅调整我们发给上游的 Range）
-	req, _ := http.NewRequest("GET", h.targetURL, nil)
+	req, err := http.NewRequest(http.MethodGet, h.targetURL, nil)
+	if err != nil {
+		proxyErr = err
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "invalid upstream URL"})
+		return
+	}
 	for k, v := range h.headers {
 		req.Header.Set(k, v)
 	}
@@ -284,48 +318,47 @@ func (h *CloudStorageHandler) serveMPVRangeSimple(c *gin.Context) {
 	// 若你保持原有 h.client 30s 也可，因为 10MiB 通常很快
 	resp, err := h.client.Do(req)
 	if err != nil {
+		proxyErr = err
 		logger.Errorf("upstream error: %v", err)
 		c.JSON(http.StatusBadGateway, gin.H{"error": "upstream unavailable"})
 		return
 	}
 	defer resp.Body.Close()
+	upstreamStatus = resp.StatusCode
+	contentRange = resp.Header.Get("Content-Range")
 
-	// 4) 透传：优先保持上游行为（状态码 + 关键头）
-	switch resp.StatusCode {
-	case http.StatusPartialContent:
-		// 正常 206，直接透传
-		passthroughHeaders(c.Writer, resp)
-		c.Status(http.StatusPartialContent)
-
-	case http.StatusOK:
-		// 少数后端忽略 Range，兜底构造 206 + Content-Range
-		// Content-Type 仍来自上游
-		if v := resp.Header.Get("Content-Type"); v != "" {
-			c.Header("Content-Type", v)
-		} else {
-			c.Header("Content-Type", "application/octet-stream")
-		}
-		length := end - start + 1
-		c.Header("Accept-Ranges", "bytes")
-		c.Header("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, info.Size))
-		c.Header("Content-Length", fmt.Sprintf("%d", length))
-		c.Status(http.StatusPartialContent)
-
-	default:
+	if resp.StatusCode != http.StatusPartialContent {
+		proxyErr = fmt.Errorf("upstream ignored or rejected Range: status=%d", resp.StatusCode)
 		// 其它状态直接转发（如 4xx/5xx）
-		// 也可以改为 502，以隐藏上游细节
 		logger.Warnf("unexpected upstream status: %d", resp.StatusCode)
-		// 尽量把上游错误信息传递回去
-		body, _ := io.ReadAll(resp.Body)
-		c.Data(resp.StatusCode, resp.Header.Get("Content-Type"), body)
+		c.JSON(http.StatusBadGateway, gin.H{"error": "upstream does not support byte ranges"})
 		return
 	}
 
-	// 5) 流式转发响应体（无缓存，无拼接）
+	upstreamStart, upstreamEnd, _, err := parseContentRange(contentRange)
+	if err != nil {
+		proxyErr = fmt.Errorf("unexpected upstream Content-Range %q: %w", contentRange, err)
+		c.JSON(http.StatusBadGateway, gin.H{"error": "invalid upstream byte range"})
+		return
+	}
+	if upstreamStart != start || upstreamEnd != end {
+		proxyErr = fmt.Errorf("unexpected upstream Content-Range %q for bytes=%d-%d", contentRange, start, end)
+		c.JSON(http.StatusBadGateway, gin.H{"error": "invalid upstream byte range"})
+		return
+	}
+
+	length := end - start + 1
+	passthroughHeaders(c.Writer, resp)
+	c.Header("Accept-Ranges", "bytes")
+	c.Header("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, info.Size))
+	c.Header("Content-Length", strconv.FormatInt(length, 10))
+	c.Status(http.StatusPartialContent)
+
 	if f, ok := c.Writer.(http.Flusher); ok {
 		f.Flush()
 	}
-	if _, err := io.Copy(c.Writer, resp.Body); err != nil {
+	if _, err := io.CopyN(c.Writer, resp.Body, length); err != nil {
+		proxyErr = err
 		// 客户端中断通常会到这里，不必视作错误
 		logger.Debugf("client closed / copy ended: %v", err)
 		return
