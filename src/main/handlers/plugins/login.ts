@@ -5,6 +5,7 @@ import { readConfig, saveConfig } from '../../../modules/fn_config/config';
 import { getMainWindow } from '../../common/mainwin';
 import { session } from 'electron';
 import * as log from '../../../modules/logger';
+import { clearAccessGrants } from '../../../modules/fn_api/accessGrant';
 
 /**
  * 登录拦截插件
@@ -16,6 +17,7 @@ import * as log from '../../../modules/logger';
  */
 function clearLoginCookies(): void {
     log.info('清空登录信息和Cookie');
+    clearAccessGrants();
 
     // 清空配置中保存的token
     const config = readConfig() || {};

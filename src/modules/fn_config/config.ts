@@ -7,6 +7,7 @@ import { USER_DATA_PATH } from '../../public/constants';
 const HISTORY_LIMIT = 5;
 const ENCRYPTION_KEY = 'U2XDcFsV6rdTE9wB5ZHvy6BW9hBTKJ1H'; // 32 chars for aes-256
 const IV = Buffer.alloc(16, 0); // Initialization vector
+const ACCESS_CODE_PREFIX = 'aes256:';
 
 app.setPath('userData', USER_DATA_PATH);
 
@@ -17,6 +18,7 @@ export interface Config {
     account?: string;
     domain?: string;
     token?: string;
+    accessCode?: string;
     useHttps?: boolean;
     history?: HistoryItem[];
     downloadProxyEnabled?: boolean;
@@ -37,6 +39,7 @@ export interface HistoryItem {
     domain: string;
     account: string;
     password: string;
+    accessCode?: string;
     useHttps?: boolean;
 }
 
@@ -47,6 +50,7 @@ export interface SaveConfigParams {
     account: string;
     domain: string;
     token: string;
+    accessCode?: string;
     useHttps?: boolean;
 }
 
@@ -57,6 +61,7 @@ export interface AddHistoryParams {
     domain: string;
     account: string;
     password: string;
+    accessCode?: string;
     useHttps?: boolean;
 }
 
@@ -108,12 +113,43 @@ function decrypt(encrypted: string): string {
     return decrypted;
 }
 
+function encryptAccessCode(value: string | undefined): string {
+    if (!value) return '';
+    return `${ACCESS_CODE_PREFIX}${encrypt(value)}`;
+}
+
+function decryptAccessCode(value: string | undefined): string {
+    if (!value) return '';
+    if (!value.startsWith(ACCESS_CODE_PREFIX)) return value;
+    return decrypt(value.slice(ACCESS_CODE_PREFIX.length));
+}
+
+function writeConfig(config: Config): void {
+    const stored: Config = {
+        ...config,
+        accessCode: encryptAccessCode(config.accessCode),
+        history: config.history?.map(item => ({
+            ...item,
+            accessCode: encryptAccessCode(item.accessCode),
+        })),
+    };
+    fs.writeFileSync(getConfigPath(), JSON.stringify(stored, null, 2));
+}
+
 // 读取配置
 export function readConfig(): Config | null {
     const p = getConfigPath();
     if (fs.existsSync(p)) {
         try {
-            return JSON.parse(fs.readFileSync(p, 'utf-8')) as Config;
+            const stored = JSON.parse(fs.readFileSync(p, 'utf-8')) as Config;
+            return {
+                ...stored,
+                accessCode: decryptAccessCode(stored.accessCode),
+                history: stored.history?.map(item => ({
+                    ...item,
+                    accessCode: decryptAccessCode(item.accessCode),
+                })),
+            };
         } catch {
             return null;
         }
@@ -122,17 +158,18 @@ export function readConfig(): Config | null {
 }
 
 // 保存配置（账号、域名、token、HTTPS设置）
-export function saveConfig({ account, domain, token, useHttps }: SaveConfigParams): void {
+export function saveConfig({ account, domain, token, accessCode, useHttps }: SaveConfigParams): void {
     const config: Config = readConfig() || {};
     config.account = account;
     config.domain = domain;
     config.token = token;
+    if (accessCode !== undefined) config.accessCode = accessCode;
     config.useHttps = useHttps || false;
-    fs.writeFileSync(getConfigPath(), JSON.stringify(config, null, 2));
+    writeConfig(config);
 }
 
 // 添加历史记录（域名、账号、加密密码、HTTPS设置）
-export function addHistory({ domain, account, password, useHttps }: AddHistoryParams): void {
+export function addHistory({ domain, account, password, accessCode, useHttps }: AddHistoryParams): void {
     const config: Config = readConfig() || {};
     config.history = config.history || [];
     // 移除重复项
@@ -144,13 +181,14 @@ export function addHistory({ domain, account, password, useHttps }: AddHistoryPa
         domain,
         account,
         password: encrypt(password),
+        accessCode: accessCode || '',
         useHttps: useHttps || false
     });
     // 限制最多数量
     if (config.history.length > HISTORY_LIMIT) {
         config.history = config.history.slice(0, HISTORY_LIMIT);
     }
-    fs.writeFileSync(getConfigPath(), JSON.stringify(config, null, 2));
+    writeConfig(config);
 }
 
 // 获取历史记录（解密密码）
@@ -161,6 +199,7 @@ export function getHistory(): HistoryItem[] {
         domain: item.domain,
         account: item.account,
         password: decrypt(item.password),
+        accessCode: item.accessCode || '',
         useHttps: item.useHttps || false
     }));
 }
@@ -169,7 +208,7 @@ export function getHistory(): HistoryItem[] {
 export function clearHistory(): void {
     const config: Config = readConfig() || {};
     config.history = [];
-    fs.writeFileSync(getConfigPath(), JSON.stringify(config, null, 2));
+    writeConfig(config);
 }
 
 // 删除单个历史记录
@@ -183,7 +222,7 @@ export function deleteHistoryItem({ domain, account }: DeleteHistoryParams): boo
     );
     
     if (config.history.length < originalLength) {
-        fs.writeFileSync(getConfigPath(), JSON.stringify(config, null, 2));
+        writeConfig(config);
         return true;
     }
     return false;
@@ -203,7 +242,7 @@ export function setDownloadProxyConfig({ enabled = true, proxyUrl = 'https://ghf
     const config: Config = readConfig() || {};
     config.downloadProxyEnabled = enabled;
     config.downloadProxy = proxyUrl;
-    fs.writeFileSync(getConfigPath(), JSON.stringify(config, null, 2));
+    writeConfig(config);
 }
 
 // 获取是否隐藏原有播放按钮配置
@@ -216,7 +255,7 @@ export function getHideOriginalPlayButton(): boolean {
 export function setHideOriginalPlayButton(hide: boolean): void {
     const config: Config = readConfig() || {};
     config.hideOriginalPlayButton = hide;
-    fs.writeFileSync(getConfigPath(), JSON.stringify(config, null, 2));
+    writeConfig(config);
 }
 
 // 获取NAS本地网盘代理配置
@@ -229,7 +268,7 @@ export function getNasProxyEnabled(): boolean {
 export function setNasProxyEnabled(enabled: boolean): void {
     const config: Config = readConfig() || {};
     config.nasProxyEnabled = enabled;
-    fs.writeFileSync(getConfigPath(), JSON.stringify(config, null, 2));
+    writeConfig(config);
 }
 
 // 获取 macOS 关闭行为偏好
@@ -242,7 +281,7 @@ export function getMacCloseAction(): 'minimize' | 'quit' | 'ask' {
 export function setMacCloseAction(action: 'minimize' | 'quit' | 'ask'): void {
     const config: Config = readConfig() || {};
     config.macCloseAction = action;
-    fs.writeFileSync(getConfigPath(), JSON.stringify(config, null, 2));
+    writeConfig(config);
 }
 
 // 获取托盘通知是否已显示过
@@ -255,7 +294,7 @@ export function getTrayNotificationShown(): boolean {
 export function setTrayNotificationShown(shown: boolean): void {
     const config: Config = readConfig() || {};
     config.trayNotificationShown = shown;
-    fs.writeFileSync(getConfigPath(), JSON.stringify(config, null, 2));
+    writeConfig(config);
 }
 
 // 获取MPV播放器路径配置
@@ -272,7 +311,7 @@ export function setMpvPlayerPath(path: string | null): void {
     } else {
         config.mpvPlayerPath = path;
     }
-    fs.writeFileSync(getConfigPath(), JSON.stringify(config, null, 2));
+    writeConfig(config);
 }
 
 
@@ -290,7 +329,7 @@ export function setPotPlayerPath(path: string | null): void {
     } else {
         config.potPlayerPath = path;
     }
-    fs.writeFileSync(getConfigPath(), JSON.stringify(config, null, 2));
+    writeConfig(config);
 }
 
 // 向后兼容的函数
@@ -314,7 +353,7 @@ export function setExitMode(mode: 'direct' | 'minimize' | 'ask'): void {
         ...config,
         exitMode: mode
     };
-    fs.writeFileSync(getConfigPath(), JSON.stringify(updatedConfig, null, 2));
+    writeConfig(updatedConfig);
 }
 
 // CommonJS导出，确保与现有代码兼容

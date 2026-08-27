@@ -4,11 +4,25 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as log from '../../modules/logger';
 import { getDaemonInstance, ProxyDaemon } from './proxyDaemon';
+import { loadOrCreateProxySecret } from './proxySecret';
 
 
 // 全局守护程序实例
 let proxyDaemon: ProxyDaemon | null = null;
 let restartScheduled = false;
+let proxySecret: string | null = null;
+
+export function getProxySecret(): string {
+    if (!proxySecret) {
+        proxySecret = loadOrCreateProxySecret(app.getPath('userData'));
+    }
+    return proxySecret;
+}
+
+function sendProxySecret(proxyProcess: ChildProcess, secret: string): void {
+    if (!proxyProcess.stdin) throw new Error('Proxy 标准输入不可用，无法传递认证密钥');
+    proxyProcess.stdin.end(secret + '\n');
+}
 
 // 获取应用中的proxy可执行文件路径
 function getProxyExecPath(): string {
@@ -41,6 +55,7 @@ function getProxyExecPath(): string {
 // 启动proxy模块的函数
 export async function startProxyProcess(): Promise<ChildProcess> {
     const proxyPath = getProxyExecPath();
+    const secret = getProxySecret();
 
     // 检查可执行文件是否存在
     if (!fs.existsSync(proxyPath)) {
@@ -58,6 +73,8 @@ export async function startProxyProcess(): Promise<ChildProcess> {
             detached: false,
             env: { ...process.env, LANG: 'C.UTF-8' } // 设置UTF-8编码环境
         });
+
+        sendProxySecret(proxyProcess, secret);
 
         log.info('正在启动proxy进程...');
 
@@ -158,6 +175,7 @@ export async function startProxyProcess(): Promise<ChildProcess> {
  */
 async function startProxyProcessInternal(): Promise<ChildProcess> {
     const proxyPath = getProxyExecPath();
+    const secret = getProxySecret();
 
     // 启动proxy进程
     const proxyProcess = spawn(proxyPath, [], {
@@ -165,6 +183,8 @@ async function startProxyProcessInternal(): Promise<ChildProcess> {
         detached: false,
         env: { ...process.env, LANG: 'C.UTF-8' }
     });
+
+    sendProxySecret(proxyProcess, secret);
 
     log.info('正在启动proxy进程（重启）...');
 

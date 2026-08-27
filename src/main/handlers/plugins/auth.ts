@@ -7,6 +7,11 @@ import { registerHandler } from '../core/ipcHandler';
 import * as log from '../../../modules/logger';
 import { showCertificateTrustDialog, addTrustedHost } from '../../../modules/cert_trust';
 import { isFnId, handleFnIdLogin } from './fnid_login';
+import {
+    AccessCodeVerificationError,
+    establishAccessCodeSession,
+} from '../../common/accessCodeSession';
+import { applyVerifiedOriginToFnConnectBaseUrl } from '../core/fnConnect';
 
 /**
  * 用户认证插件
@@ -17,6 +22,7 @@ interface LoginData {
     domain: string;
     username: string;
     password: string;
+    accessCode?: string;
     useHttps?: boolean;
 }
 
@@ -30,7 +36,8 @@ function handleGetConfig(event: IpcMainEvent): void {
     try {
         const config = fnConfig.readConfig() || {};
         const history = fnConfig.getHistory() || [];
-        event.reply('config-data', { config, history });
+        const { token: _token, ...safeConfig } = config;
+        event.reply('config-data', { config: safeConfig, history });
     } catch (error) {
         log.error('读取配置失败:', error);
         event.reply('config-data', { config: {}, history: [] });
@@ -60,8 +67,12 @@ function handleDeleteHistoryItem(event: IpcMainEvent, { domain, account }: Histo
 }
 
 // 用户登录处理
-async function handleLogin(event: IpcMainEvent, loginData: LoginData): Promise<void> {
-    log.info('Received loginData:', loginData);
+async function handleLogin(
+    event: IpcMainEvent,
+    loginData: LoginData,
+    certificateRetryAttempted: boolean = false,
+): Promise<void> {
+    log.info('收到登录请求:', { useHttps: loginData?.useHttps });
 
     if (!loginData || !loginData.domain || !loginData.username || !loginData.password) {
         log.error('登录失败: 缺少必要的登录信息, loginData:', loginData);
@@ -80,9 +91,12 @@ async function handleLogin(event: IpcMainEvent, loginData: LoginData): Promise<v
 
     // 构建服务器地址
     let server = loginData.useHttps ? `https://${loginData.domain}` : `http://${loginData.domain}`;
-    const fnapi = new fn.ApiService(server);
+    const accessCode = loginData.accessCode?.trim() || '';
 
     try {
+        const accessSession = await establishAccessCodeSession(server, accessCode);
+        server = accessSession.baseUrl;
+        const fnapi = new fn.ApiService(server);
         const response = await fnapi.login(loginData.username, loginData.password);
 
         if (!response || !response.success) {
@@ -104,7 +118,14 @@ async function handleLogin(event: IpcMainEvent, loginData: LoginData): Promise<v
                     log.info('用户信任证书，重试登录');
 
                     // 递归调用重试登录
-                    return handleLogin(event, loginData);
+                    if (certificateRetryAttempted) {
+                        event.reply('login-error', {
+                            title: '证书验证失败',
+                            message: '信任证书后仍无法建立安全连接，请检查服务器证书配置。',
+                        });
+                        return;
+                    }
+                    return handleLogin(event, loginData, true);
                 } else {
                     // 用户不信任，返回错误
                     event.reply('login-error', {
@@ -125,7 +146,14 @@ async function handleLogin(event: IpcMainEvent, loginData: LoginData): Promise<v
         }
 
         // 登录成功，处理返回的 token 和可能的重定向 URL
-        server = response.moveUrl || server;
+        if (response.moveUrl) {
+            if (accessCode) {
+                const movedAccessSession = await establishAccessCodeSession(response.moveUrl, accessCode);
+                server = applyVerifiedOriginToFnConnectBaseUrl(response.moveUrl, movedAccessSession.baseUrl);
+            } else {
+                server = response.moveUrl;
+            }
+        }
         const token = response.data.token;
         if (!token) {
             log.error('登录失败: 没有有效的登录信息，无法恢复 cookies');
@@ -135,7 +163,7 @@ async function handleLogin(event: IpcMainEvent, loginData: LoginData): Promise<v
             });
             return;
         }
-        log.info('登录成功 token:', token);
+        log.info('登录成功，已获取 token');
 
         // 保存登录信息
         const { saveConfig, addHistory } = require('../../../modules/fn_config/config');
@@ -145,6 +173,7 @@ async function handleLogin(event: IpcMainEvent, loginData: LoginData): Promise<v
             account: loginData.username,
             domain: server,
             token: response.data.token,
+            accessCode,
             useHttps: loginData.useHttps
         });
 
@@ -153,6 +182,7 @@ async function handleLogin(event: IpcMainEvent, loginData: LoginData): Promise<v
             domain: loginData.domain,
             account: loginData.username,
             password: loginData.password,
+            accessCode,
             useHttps: loginData.useHttps
         });
 
@@ -171,6 +201,16 @@ async function handleLogin(event: IpcMainEvent, loginData: LoginData): Promise<v
             }
         }
     } catch (error) {
+        if (error instanceof AccessCodeVerificationError) {
+            log.warn('访问码验证失败:', error.reason);
+            event.reply('login-error', {
+                title: error.reason === 'rejected' ? '访问码错误' : '连接失败',
+                message: error.reason === 'rejected'
+                    ? '访问码错误，请检查后重试。'
+                    : '无法连接到访问码验证服务，请检查域名、证书或网络连接。',
+            });
+            return;
+        }
         log.error('登录请求失败:', error);
         event.reply('login-error', {
             title: '连接失败',

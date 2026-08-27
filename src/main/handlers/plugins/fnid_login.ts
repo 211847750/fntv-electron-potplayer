@@ -1,4 +1,4 @@
-import { BrowserWindow, IpcMainEvent, session } from 'electron';
+import { BrowserWindow, IpcMainEvent } from 'electron';
 import { getMainWindow } from '../../common/mainwin';
 import { ApiService } from '../../../modules/fn_api/api';
 import { request, HttpMethod } from '../../../modules/fn_api/request';
@@ -6,6 +6,11 @@ import { isTrusted } from '../../../modules/cert_trust';
 import { restoreCookies } from '../../../modules/fn_config/cookie';
 import * as fnConfig from '../../../modules/fn_config/config';
 import * as log from '../../../modules/logger';
+import { applyVerifiedOriginToFnConnectBaseUrl } from '../core/fnConnect';
+import {
+    AccessCodeVerificationError,
+    establishAccessCodeSession,
+} from '../../common/accessCodeSession';
 
 /**
  * FN ID 登录插件
@@ -16,6 +21,7 @@ interface LoginData {
     domain: string;
     username: string;
     password: string;
+    accessCode?: string;
     useHttps?: boolean;
 }
 
@@ -223,13 +229,36 @@ function getInjectionScript(username: string, password: string): string {
     `;
 }
 
+function getAccessCodeInjectionScript(accessCode: string): string {
+    return `
+        (function() {
+            var input = document.querySelector('#access-code-input, input[name="access-code"]');
+            var form = input ? input.closest('form') : null;
+            var title = document.querySelector('#page-title');
+            if (!input || !form || !title || title.textContent.trim() !== '请输入访问码') return false;
+            var setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+            setter.call(input, ${JSON.stringify(accessCode)});
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            input.dispatchEvent(new Event('change', { bubbles: true }));
+            if (typeof form.requestSubmit === 'function') {
+                form.requestSubmit();
+            } else {
+                var submit = form.querySelector('button[type="submit"], input[type="submit"]');
+                if (submit) submit.click();
+            }
+            return true;
+        })();
+    `;
+}
+
 /**
  * 处理 FN ID OAuth 登录流程
  */
 export async function handleFnIdLogin(event: IpcMainEvent, loginData: LoginData): Promise<void> {
     const fnId = loginData.domain.trim();
     const fnConnectUrl = buildFnConnectUrl(fnId);
-    log.info(`[FN ID] 开始 FN ID 登录: fnId=${fnId}, url=${fnConnectUrl}`);
+    const accessCode = loginData.accessCode?.trim() || '';
+    log.info('[FN ID] 开始 FN ID 登录');
 
     let oauthWindow: BrowserWindow | null = null;
     let baseUrl = '';
@@ -259,6 +288,12 @@ export async function handleFnIdLogin(event: IpcMainEvent, loginData: LoginData)
 
         const oauthSession = oauthWindow.webContents.session;
 
+        async function establishTargetSession(targetBaseUrl: string): Promise<string> {
+            if (!accessCode) return targetBaseUrl;
+            const result = await establishAccessCodeSession(targetBaseUrl, accessCode);
+            return applyVerifiedOriginToFnConnectBaseUrl(targetBaseUrl, result.baseUrl);
+        }
+
         // 为 FN Connect 域名设置 mode=relay Cookie
         await oauthSession.cookies.set({
             url: fnConnectUrl,
@@ -269,18 +304,31 @@ export async function handleFnIdLogin(event: IpcMainEvent, loginData: LoginData)
         });
 
         // 注册 JS bridge 用于 WebView 与主进程通信
-        oauthWindow.webContents.on('did-finish-load', () => {
+        oauthWindow.webContents.on('did-finish-load', async () => {
             if (!oauthWindow) return;
-            const script = getInjectionScript(loginData.username, loginData.password);
-            oauthWindow.webContents.executeJavaScript(`
-                window.__fntvBridge = function(msg) {
-                    // 通过 console 传递消息到主进程
-                    console.log('__FNTV_BRIDGE__:' + msg);
-                };
-                ${script}
-            `).catch(err => {
+            try {
+                const isAccessCodePage = accessCode
+                    ? await oauthWindow.webContents.executeJavaScript(`(() => {
+                        const input = document.querySelector('#access-code-input, input[name="access-code"]');
+                        const title = document.querySelector('#page-title');
+                        return Boolean(input && input.closest('form') && title && title.textContent.trim() === '请输入访问码');
+                    })()`)
+                    : false;
+                if (isAccessCodePage) {
+                    await oauthWindow.webContents.executeJavaScript(getAccessCodeInjectionScript(accessCode));
+                    return;
+                }
+
+                const script = getInjectionScript(loginData.username, loginData.password);
+                await oauthWindow.webContents.executeJavaScript(`
+                    window.__fntvBridge = function(msg) {
+                        console.log('__FNTV_BRIDGE__:' + msg);
+                    };
+                    ${script}
+                `);
+            } catch (err) {
                 log.error('[FN ID] JS 注入失败:', err);
-            });
+            }
         });
 
         // 创建一个 Promise 来等待登录完成
@@ -338,6 +386,7 @@ export async function handleFnIdLogin(event: IpcMainEvent, loginData: LoginData)
                             }
 
                             if (baseUrl && appId) {
+                                baseUrl = await establishTargetSession(baseUrl);
                                 sysConfigLoaded = true;
                                 const redirectUri = `${baseUrl}/v/oauth/result`;
                                 const targetUrl = `${baseUrl}/signin?client_id=${appId}&redirect_uri=${encodeURIComponent(redirectUri)}`;
@@ -395,6 +444,7 @@ export async function handleFnIdLogin(event: IpcMainEvent, loginData: LoginData)
 
                             try {
                                 // 使用 baseUrl 创建 API 实例并换取 token
+                                baseUrl = await establishTargetSession(baseUrl);
                                 const fnapi = new ApiService(baseUrl);
                                 const authResponse = await fnapi.auth(code);
 
@@ -416,6 +466,7 @@ export async function handleFnIdLogin(event: IpcMainEvent, loginData: LoginData)
                                     account: loginData.username,
                                     domain: baseUrl,
                                     token: token,
+                                    accessCode,
                                     useHttps: true,
                                 });
 
@@ -424,6 +475,7 @@ export async function handleFnIdLogin(event: IpcMainEvent, loginData: LoginData)
                                     domain: fnId,
                                     account: loginData.username,
                                     password: loginData.password,
+                                    accessCode,
                                     useHttps: true,
                                 });
 
@@ -481,7 +533,7 @@ export async function handleFnIdLogin(event: IpcMainEvent, loginData: LoginData)
                         if (oauth.url && oauth.url !== '://') {
                             targetBaseUrl = oauth.url;
                         }
-                        baseUrl = targetBaseUrl;
+                        baseUrl = await establishTargetSession(targetBaseUrl);
 
                         const appId = oauth.app_id;
                         const redirectUri = `${targetBaseUrl}/v/oauth/result`;
@@ -552,7 +604,8 @@ export async function handleFnIdLogin(event: IpcMainEvent, loginData: LoginData)
         }
 
     } catch (error: any) {
-        log.error('[FN ID] 登录失败:', error);
+        const isAccessCodeError = error instanceof AccessCodeVerificationError;
+        log.error('[FN ID] 登录失败:', isAccessCodeError ? error.reason : error);
 
         // 关闭 OAuth 窗口
         if (oauthWindow && !oauthWindow.isDestroyed()) {
@@ -560,8 +613,12 @@ export async function handleFnIdLogin(event: IpcMainEvent, loginData: LoginData)
         }
 
         event.reply('login-error', {
-            title: 'FN ID 登录失败',
-            message: error.message || '通过 FN ID 登录时发生错误，请检查 FN ID 和网络连接。'
+            title: isAccessCodeError && error.reason === 'rejected' ? '访问码错误' : 'FN ID 登录失败',
+            message: isAccessCodeError
+                ? (error.reason === 'rejected'
+                    ? '访问码错误，请检查后重试。'
+                    : '无法连接到访问码验证服务，请检查地址、证书或网络连接。')
+                : error.message || '通过 FN ID 登录时发生错误，请检查 FN ID 和网络连接。'
         });
     }
 }

@@ -8,10 +8,12 @@ import * as log from '../../../modules/logger';
 import * as os from 'os';
 import * as fs from 'fs';
 import { ItemListRequest } from '../../../modules/fn_api/types';
-import { escape } from 'querystring';
 import { isTrusted } from '../../../modules/cert_trust';
 import { checkLibraryPageUrl } from '../../common/utils';
 import { getMainWindow } from '../../common/mainwin';
+import { getProxySecret } from '../../common/proxy';
+import { createProxyPlaybackUrl, registerPlaybackSession } from '../../common/proxySession';
+import { getAccessCookieHeader } from '../../../modules/fn_api/accessGrant';
 
 /**
 * 媒体播放插件
@@ -408,20 +410,24 @@ async function resolvePlayInfo(fnapi: fn.ApiService, request: PlayRequest): Prom
 
 // 处理播放事件
 async function handlePlayMovie(_event: IpcMainEvent, request: PlayRequest): Promise<void> {
-    const { id, token, sourceIndex } = request;
+    const { id, sourceIndex } = request;
     // 检查是否已有播放器在播放
     if (currentPlayer && currentPlayer.isPlaying()) {
         log.warn('已有播放器在播放，无法重复播放');
         return;
     }
 
-    log.info('Play movie event received id:', id, 'routeType:', request.routeType ?? 'item', 'with token:', token, 'index:', sourceIndex);
+    log.info('收到播放请求:', id, 'routeType:', request.routeType ?? 'item', 'index:', sourceIndex);
 
     const config = fnConfig.readConfig();
     if (!config || !config.domain) {
         throw new Error('无法找到服务器地址配置');
     }
 
+    const token = config.token || request.token;
+    if (!token) {
+        throw new Error('无法找到登录令牌');
+    }
     const fnapi = new fn.ApiService(config.domain, token);
 
     const playInfo = await resolvePlayInfo(fnapi, request);
@@ -459,7 +465,7 @@ async function handlePlayMovie(_event: IpcMainEvent, request: PlayRequest): Prom
         }
 
         for (const episode of episodeList.data) {
-            const mediaItem = processEpisodeMedia(config, episode, skipConfig);
+            const mediaItem = processEpisodeMedia(episode, skipConfig);
             playList.push(mediaItem);
             log.info('添加剧集到播放列表:', mediaItem);
         }
@@ -481,13 +487,13 @@ async function handlePlayMovie(_event: IpcMainEvent, request: PlayRequest): Prom
         }
 
         for (const media of mediaList.data.list) {
-            const mediaItem = processEpisodeMedia(config, media, skipConfig);
+            const mediaItem = processEpisodeMedia(media, skipConfig);
             playList.push(mediaItem);
             log.info('添加剧集到播放列表:', mediaItem);
         }
     }
     else {
-        const mediaItem = processSingleMedia(config, playInfo);
+        const mediaItem = processSingleMedia(playInfo);
         playList.push(mediaItem);
         log.info('添加单集到播放列表:', mediaItem);
     }
@@ -501,11 +507,37 @@ async function handlePlayMovie(_event: IpcMainEvent, request: PlayRequest): Prom
     const currentIndex = playList.findIndex(item => item.itemGuid === itemGuid);
     const playableIndex = currentIndex >= 0 ? currentIndex : 0;
 
-    // 检查是否选择了特定的播放源索引
-    if (!isLive && sourceIndex > 0) {
-        log.info(`使用指定的播放源索引: ${sourceIndex}`);
-        // 修改播放列表中的源索引
-        playList[playableIndex].playLink = getProxyUrl(config, playList[playableIndex].itemGuid, sourceIndex);
+    if (!isLive) {
+        if (currentIndex < 0 || playList.some(item => !item.itemGuid)) {
+            throw new Error('播放列表缺少有效媒体标识');
+        }
+        if (!config.account) {
+            throw new Error('无法找到登录账号');
+        }
+
+        const playbackSession = await registerPlaybackSession(getProxySecret(), {
+            token: config.token || token,
+            account: config.account,
+            domain: config.domain,
+            accessCookie: getAccessCookieHeader(config.domain),
+            skipVerify: isTrusted(config.domain),
+            useNasLocal: config.nasProxyEnabled === true,
+            itemGuids: playList.map(item => item.itemGuid),
+        });
+
+        playList = playList.map(item => ({
+            ...item,
+            playLink: createProxyPlaybackUrl(playbackSession, item.itemGuid),
+        }));
+
+        if (sourceIndex > 0) {
+            log.info(`使用指定的播放源索引: ${sourceIndex}`);
+            playList[playableIndex].playLink = createProxyPlaybackUrl(
+                playbackSession,
+                playList[playableIndex].itemGuid,
+                sourceIndex,
+            );
+        }
     }
 
     const playerPath = getPotPlayerPath();
@@ -540,18 +572,8 @@ async function handlePlayMovie(_event: IpcMainEvent, request: PlayRequest): Prom
     }
 }
 
-// 生成代理URL
-function getProxyUrl(cfg: fnConfig.Config, itemGuid: string, sourceIndex: number = 0): string {
-    const skipVerify = isTrusted(cfg.domain || '') ? '1' : '0';
-    const useNasLocal = cfg.nasProxyEnabled === true ? '1' : '0';
-    // urlencode
-    const domain = escape(cfg.domain || '');
-    // const skipVerify = '1'; // 永远跳过证书验证
-    return `http://127.0.0.1:22345/api/v1/playvideo/${itemGuid}?token=${cfg.token}&skipVerify=${skipVerify}&account=${cfg.account}&domain=${domain}&useNasLocal=${useNasLocal}&sourceIndex=${sourceIndex}`;
-}
-
 // 处理当前播放的媒体信息
-function processEpisodeMedia(cfg: fnConfig.Config, info: fn.PlayListItem, skipConfig?: { introEndSec?: number; outroDurationSec?: number }): ply.PlayItem {
+function processEpisodeMedia(info: fn.PlayListItem, skipConfig?: { introEndSec?: number; outroDurationSec?: number }): ply.PlayItem {
     return {
         itemGuid: info.guid,
         title: info.title,
@@ -560,14 +582,14 @@ function processEpisodeMedia(cfg: fnConfig.Config, info: fn.PlayListItem, skipCo
         episodeNumber: info.episode_number,
         ts: info.ts,
         duration: info.duration,
-        playLink: getProxyUrl(cfg, info.guid),
+        playLink: '',
         introEndSec: skipConfig?.introEndSec,
         outroDurationSec: skipConfig?.outroDurationSec,
     };
 }
 
 // 处理单个待播放媒体信息
-function processSingleMedia(cfg: fnConfig.Config, info: fn.PlayInfo): ply.PlayItem {
+function processSingleMedia(info: fn.PlayInfo): ply.PlayItem {
     return {
         itemGuid: info.guid,
         title: info.item.title,
@@ -576,7 +598,7 @@ function processSingleMedia(cfg: fnConfig.Config, info: fn.PlayInfo): ply.PlayIt
         episodeNumber: info.item.episode_number,
         ts: info.ts,
         duration: info.item.duration,
-        playLink: getProxyUrl(cfg, info.guid),
+        playLink: '',
         introEndSec: info.play_config?.skip_opening ?? undefined,
         outroDurationSec: info.play_config?.skip_ending ?? undefined,
     };
